@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from app.middleware.killswitch import KillswitchMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.token_auth import TokenAuthMiddleware
@@ -25,6 +26,27 @@ app.add_middleware(
 
 app.include_router(research.router)
 app.include_router(admin.router)
+
+
+@app.get("/")
+def root():
+    content = """
+╔═══════════════════════════════════════╗
+║                                       ║
+║              AIWIKI                   ║
+║                                       ║
+║   Multi-Agent Content Pipeline        ║
+║                                       ║
+║   Four specialized AI agents          ║
+║   collaborate to research, filter,    ║
+║   write, and edit articles on any     ║
+║   topic you choose.                   ║
+║                                       ║
+║   Made by @pedrovanzo                 ║
+║                                       ║
+╚═══════════════════════════════════════╝
+"""
+    return PlainTextResponse(content)
 
 
 @app.get("/health")

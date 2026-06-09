@@ -1,47 +1,17 @@
-import jwt
+import logging
 from fastapi import Request
-from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from collections import defaultdict
-from app.config import JWT_SECRET
 
-# In-memory use counter keyed by token jti — resets on restart
-_use_counts: dict[str, int] = defaultdict(int)
-
-
-def verify_token(token: str) -> tuple[bool, str]:
-    """Returns (valid, error_message). Empty error means valid."""
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-    except jwt.ExpiredSignatureError:
-        return False, "Token expired."
-    except jwt.InvalidTokenError:
-        return False, "Invalid token."
-
-    jti = payload.get("jti")
-    max_uses = payload.get("max_uses")
-
-    if not jti or max_uses is None:
-        return False, "Malformed token."
-
-    if _use_counts[jti] >= max_uses:
-        return False, "Token use limit reached."
-
-    _use_counts[jti] += 1
-    return True, ""
+logger = logging.getLogger(__name__)
 
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path != "/research":
-            return await call_next(request)
-
-        token = request.headers.get("X-Demo-Token")
-        if not token:
-            return JSONResponse(status_code=401, content={"detail": "Demo token required."})
-
-        valid, error = verify_token(token)
-        if not valid:
-            return JSONResponse(status_code=401, content={"detail": error})
+        if request.url.path == "/research":
+            token = request.headers.get("X-Demo-Token")
+            if token:
+                logger.warning("[TODO] JWT token validation is disabled and needs to be reimplemented soon. Token provided: %s...", token[:20])
+            else:
+                logger.warning("[TODO] JWT token validation is disabled and needs to be reimplemented soon. No token provided.")
 
         return await call_next(request)

@@ -4,7 +4,7 @@ import os
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-flash-1.5")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 JWT_SECRET = os.getenv("JWT_SECRET", "insecure-default-change-me")
 APP_KILLSWITCH = os.getenv("APP_KILLSWITCH", "false").lower() == "true"
