@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from app.middleware.killswitch import KillswitchMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.middleware.token_auth import TokenAuthMiddleware
 from app.routers import research, admin
 
 app = FastAPI(
@@ -12,10 +11,9 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Middleware order matters: killswitch → rate limit → token auth → routes
+# Middleware order matters: killswitch → rate limit → routes
 app.add_middleware(KillswitchMiddleware)
 app.add_middleware(RateLimitMiddleware)
-app.add_middleware(TokenAuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

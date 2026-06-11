@@ -9,15 +9,14 @@ A hands-on demo for an Agentic AI course. Four specialized AI agents collaborate
 ```
 Browser (Next.js → Vercel)
         │
-        │  POST /research  { topic, token }
+        │  POST /research  { topic }
         ▼
 FastAPI Backend (Railway/Render)
         │
         ├── Killswitch middleware
         ├── Rate limit middleware (5 req/hour/IP, 50 req/day total)
-        ├── Token auth middleware (JWT)
         │
-        └── CrewAI Pipeline
+        └── CrewAI Pipeline  (one Crew per agent, chained sequentially)
               1. Researcher  → searches web via Serper API
               2. Analyst     → filters & ranks findings
               3. Writer      → drafts the article
@@ -25,6 +24,8 @@ FastAPI Backend (Railway/Render)
 ```
 
 **Why two services?** CrewAI is Python-only. Next.js is Node. FastAPI bridges them.
+
+**Why one Crew per agent?** Each agent runs its own `Crew.kickoff()` and streams results back to the UI as it finishes. This lets the frontend show each agent's output in real time rather than waiting for the full pipeline to complete.
 
 ---
 
@@ -41,6 +42,18 @@ Each agent's output becomes the next agent's input — this is the core of a seq
 
 ---
 
+## LLM Model
+
+The default model is `google/gemma-4-31b-it:free` via OpenRouter, configured in `backend/.env`:
+
+```
+OPENROUTER_MODEL=google/gemma-4-31b-it:free
+```
+
+To switch models, replace this value with any model ID from [openrouter.ai/models](https://openrouter.ai/models). Each agent has a `max_tokens=1024` budget — a good starting point for demos. Reasoning-heavy agents (Writer, Editor) may benefit from a higher limit or a more capable model when you move beyond the demo stage.
+
+---
+
 ## Setup
 
 ### Backend
@@ -48,8 +61,8 @@ Each agent's output becomes the next agent's input — this is the core of a seq
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # Mac/Linux
+source .venv/bin/activate   # Mac/Linux
+# .venv\Scripts\activate    # Windows
 
 pip install -r requirements.txt
 
@@ -79,29 +92,15 @@ npm run dev
 
 ---
 
-## Generating a Demo Token
-
-With the backend running locally:
-
-```
-GET http://localhost:8000/admin/generate-token?label=john_doe&uses=10&days=7
-```
-
-This endpoint is **localhost-only** — it cannot be called from the deployed backend.
-
-Share the returned token with your contact via LinkedIn DM. They paste it into the app's token field to access the demo.
-
----
-
 ## Security Controls
 
 | Control | Config |
 |---------|--------|
-| Demo token (JWT) | Generated via admin endpoint |
 | Rate limit | `RATE_LIMIT_PER_HOUR` in `.env` (default: 5/hour/IP) |
 | Daily cap | `DAILY_REQUEST_CAP` in `.env` (default: 50/day) |
 | Killswitch | Set `APP_KILLSWITCH=true` in `.env` + redeploy |
 | Input sanitization | Topic: max 200 chars, alphanumeric + basic punctuation |
+| Credentials | Users can supply their own API keys via the UI; server `.env` keys are the fallback |
 
 ---
 

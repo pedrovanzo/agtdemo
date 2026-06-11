@@ -4,6 +4,8 @@ interface AgentCardProps {
   name: string;
   role: string;
   status: Status;
+  selected?: boolean;
+  onClick?: () => void;
 }
 
 const statusStyles: Record<Status, string> = {
@@ -18,9 +20,17 @@ const statusLabel: Record<Status, string> = {
   done: "Done",
 };
 
-export function AgentCard({ name, role, status }: AgentCardProps) {
+export function AgentCard({ name, role, status, selected, onClick }: AgentCardProps) {
   return (
-    <div className={`rounded-xl border-2 p-4 transition-all duration-500 ${statusStyles[status]}`}>
+    <div
+      onClick={onClick}
+      className={[
+        "rounded-xl border-2 p-4 transition-all duration-500",
+        statusStyles[status],
+        onClick ? "cursor-pointer hover:shadow-md" : "",
+        selected ? "ring-2 ring-blue-500 ring-offset-2" : "",
+      ].join(" ")}
+    >
       <p className="text-xs font-semibold uppercase tracking-wide">{role}</p>
       <p className="mt-1 text-base font-bold">{name}</p>
       <p className="mt-2 text-xs">{statusLabel[status]}</p>
