@@ -79,25 +79,19 @@ def _run_pipeline_thread(
             from app.config import OLLAMA_MODEL, OLLAMA_BASE_URL
             from app.tools.browser_tools import (
                 BrowserSession,
-                GetPageContentTool,
-                NavigateToUrlTool,
-                ClickAndDownloadTool,
+                DownloadFinancialStatementTool,
             )
 
             emit({"type": "log", "agent": "Pilot",
                   "message": f"🌍 Initializing browser session..."})
 
-            # Initialize browser session
             browser_session = BrowserSession()
             browser_session.start()
 
             emit({"type": "log", "agent": "Pilot",
-                  "message": f"🔧 Creating browser tools..."})
+                  "message": f"🔧 Creating download tool..."})
 
-            # Create tools
-            get_page_tool = GetPageContentTool(browser_session)
-            navigate_tool = NavigateToUrlTool(browser_session)
-            download_tool = ClickAndDownloadTool(browser_session, download_folder)
+            download_tool = DownloadFinancialStatementTool(browser_session, download_folder)
 
             emit({"type": "log", "agent": "Pilot",
                   "message": f"🤖 Initializing Ollama LLM ({OLLAMA_MODEL})..."})
@@ -127,23 +121,10 @@ def _run_pipeline_thread(
                 api_key="ollama",
             )
 
-            # Navigator: browses pages to find the right URL
-            navigator_agent = CrewAgent(
-                role="Web Navigator",
-                goal="Find the Financial Statements URL on a company IR page",
-                backstory="You navigate investor relations websites and extract document URLs from results tables.",
-                tools=[get_page_tool, navigate_tool],
-                llm=crewai_llm,
-                verbose=True,
-                allow_delegation=False,
-                max_iter=6,
-            )
-
-            # Downloader: only has the download tool — cannot navigate anywhere else
-            downloader_agent = CrewAgent(
-                role="File Downloader",
-                goal="Download a PDF file given its URL",
-                backstory="You receive a URL and download it. You have no browsing tools.",
+            pilot_agent = CrewAgent(
+                role="Document Downloader",
+                goal="Download the Financial Statements PDF from a company IR page",
+                backstory="You call the download_financial_statement tool with the IR URL and return the result.",
                 tools=[download_tool],
                 llm=crewai_llm,
                 verbose=True,
@@ -152,56 +133,29 @@ def _run_pipeline_thread(
             )
 
             emit({"type": "log", "agent": "Pilot",
-                  "message": f"🚀 Starting navigation task..."})
+                  "message": f"🚀 Starting download task..."})
 
-            # Create task
-            starting_point = (
-                f"Start at: {url}"
-                if url.strip()
-                else f"Search Google for '{company} investor relations'"
-            )
+            ir_url = url.strip() if url.strip() else f"https://www.google.com/search?q={company}+investor+relations"
 
-            find_url_task = Task(
+            task = Task(
                 description=(
-                    f"Company: {company}\n"
-                    f"{starting_point}\n\n"
-                    f"1. Call navigate_to_url with the starting URL.\n"
-                    f"2. Call get_page_content to read the page.\n"
-                    f"3. Look at the results table. Find the most recent quarter row.\n"
-                    f"4. From that row, identify the URL under the FINANCIAL STATEMENTS column.\n\n"
-                    f"FINANCIAL STATEMENTS = the official quarterly report filed with the regulator "
-                    f"(ITR or DFP form). The column may also be titled 'ITR', 'DFP', or 'Quarterly Report'.\n\n"
-                    f"REJECT these columns even if they sound financial:\n"
-                    f"- Earnings Release (press release summary, NOT the official filing)\n"
-                    f"- Webcast, Audio, Video, Replay, Transcription, Presentation\n\n"
-                    f"Return: a single URL string only. No explanation."
+                    f"Call download_financial_statement with this URL: {ir_url}\n"
+                    f"The tool will navigate, find the most recent Financial Statements PDF, "
+                    f"and save it to: {download_folder}\n"
+                    f"Return the result from the tool exactly as-is."
                 ),
-                agent=navigator_agent,
-                expected_output="A single URL string pointing to the Financial Statements PDF (ITR/DFP).",
-            )
-
-            download_task = Task(
-                description=(
-                    f"You have been given a URL for a Financial Statements PDF.\n"
-                    f"Call click_and_download with that URL to save the file to: {download_folder}\n"
-                    f"Once the tool confirms the file is saved, return the filename and path. Stop there."
-                ),
-                agent=downloader_agent,
+                agent=pilot_agent,
                 expected_output="The filename and full path of the downloaded PDF.",
-                context=[find_url_task],
             )
 
             emit({"type": "log", "agent": "Pilot",
-                  "message": f"🌐 Launching Chrome for: {company}"})
+                  "message": f"🌐 Navigating to: {ir_url}"})
             emit({"type": "log", "agent": "Pilot",
                   "message": f"🤖 {OLLAMA_MODEL} via Ollama (local, 100% free)"})
-            emit({"type": "log", "agent": "Pilot",
-                  "message": f"🎯 {file_query[:120]}"})
 
-            # Create crew
             crew = Crew(
-                agents=[navigator_agent, downloader_agent],
-                tasks=[find_url_task, download_task],
+                agents=[pilot_agent],
+                tasks=[task],
                 verbose=False,
                 memory=False,
             )

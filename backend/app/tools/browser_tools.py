@@ -347,3 +347,106 @@ class ClickAndDownloadTool(BaseTool):
             return f"✅ Saved: {filename} → {save_path}"
 
         return self._session.run_sync(_do())
+
+
+# ─── Direct Financial Statement downloader ────────────────────────────────────
+
+class DownloadFinancialStatementTool(BaseTool):
+    """Navigate to an IR page and download the most recent Financial Statements PDF directly."""
+
+    name: str = "download_financial_statement"
+    description: str = (
+        "Navigate to a company IR page, find the most recent available Financial Statements "
+        "PDF link in the Results Center table using DOM extraction, and download it. "
+        "Input: the IR URL to start from."
+    )
+    _session: BrowserSession = PrivateAttr()
+    _download_folder: str = PrivateAttr()
+
+    def __init__(self, session: BrowserSession, download_folder: str, **kwargs):
+        super().__init__(**kwargs)
+        self._session = session
+        self._download_folder = download_folder
+
+    def _run(self, ir_url: str) -> str:
+        return self._session.run_sync(self._do(ir_url.strip()))
+
+    async def _do(self, ir_url: str) -> str:
+        import httpx
+        page = self._session.page
+        Path(self._download_folder).mkdir(parents=True, exist_ok=True)
+
+        await page.goto(ir_url, wait_until="networkidle", timeout=30_000)
+        try:
+            await page.wait_for_selector("table", timeout=10_000)
+        except Exception:
+            pass
+
+        fs_url = await self._find_fs_link(page)
+
+        # If not on the results page yet, find and follow a Results Center link
+        if not fs_url:
+            results_href = await page.evaluate("""() => {
+                const a = Array.from(document.querySelectorAll('a[href]')).find(el => {
+                    const t = el.innerText.trim().toLowerCase();
+                    return t.includes('result') || t.includes('resultado') || t.includes('quarterly');
+                });
+                return a ? a.href : null;
+            }""")
+            if results_href:
+                await page.goto(results_href, wait_until="networkidle", timeout=30_000)
+                try:
+                    await page.wait_for_selector("table", timeout=10_000)
+                except Exception:
+                    pass
+                fs_url = await self._find_fs_link(page)
+
+        if not fs_url:
+            return "❌ Could not find an active Financial Statements link on the Results Center page."
+
+        # Download using httpx — carries browser session cookies for authenticated CDN URLs
+        browser_cookies = await page.context.cookies()
+        headers = {
+            "Cookie": "; ".join(f"{c['name']}={c['value']}" for c in browser_cookies),
+            "Referer": page.url,
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        }
+        async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+            response = await client.get(fs_url, headers=headers)
+            response.raise_for_status()
+
+        content_disp = response.headers.get("content-disposition", "")
+        if "filename=" in content_disp:
+            filename = content_disp.split("filename=")[-1].strip('"; ')
+        else:
+            filename = fs_url.split("/")[-1].split("?")[0] or "document.pdf"
+        if not filename.lower().endswith(".pdf"):
+            filename += ".pdf"
+
+        save_path = os.path.join(self._download_folder, filename)
+        Path(save_path).write_bytes(response.content)
+        return f"✅ Saved: {filename} → {save_path}"
+
+    async def _find_fs_link(self, page) -> str | None:
+        """Return the first active Financial Statements link found across all tables."""
+        return await page.evaluate("""() => {
+            for (const table of document.querySelectorAll('table')) {
+                const headers = Array.from(table.querySelectorAll('thead th, thead td'));
+                let fsIdx = -1;
+                headers.forEach((h, i) => {
+                    const t = h.innerText.trim().toUpperCase();
+                    if (t.includes('FINANCIAL') || t === 'ITR' || t === 'DFP')
+                        fsIdx = i;
+                });
+                if (fsIdx < 0) continue;
+                for (const row of table.querySelectorAll('tbody tr')) {
+                    const cells = Array.from(row.querySelectorAll('td'));
+                    const link = cells[fsIdx]?.querySelector('a[href]');
+                    if (link?.href) return link.href;
+                }
+            }
+            return null;
+        }""")
