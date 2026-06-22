@@ -66,12 +66,6 @@ def _run_pipeline_thread(
         from crewai import Agent as CrewAgent, Task, Crew
         from langchain_ollama import ChatOllama
 
-        # ── Memory (placeholder) ───────────────────────────────────────
-        emit({"type": "agent_start", "agent": "Memory"})
-        emit({"type": "log", "agent": "Memory",
-              "message": "🧠 Long-term memory: disabled (dry-run mode)"})
-        emit({"type": "agent_done", "agent": "Memory"})
-
         # ── Pilot ──────────────────────────────────────────────────────
         emit({"type": "agent_start", "agent": "Pilot"})
 

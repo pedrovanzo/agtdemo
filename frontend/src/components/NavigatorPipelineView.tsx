@@ -6,18 +6,17 @@ import { streamNavigate, NavigatorEvent } from "@/lib/api";
 import { NavigatorAbout } from "./NavigatorAbout";
 
 const AGENTS = [
-  { key: "Pilot",  name: "Pilot",  role: "Vision Navigator" },
-  { key: "Memory", name: "Memory", role: "Navigation Memory" },
+  { key: "Pilot", name: "Pilot", role: "Vision Navigator" },
 ];
 
 type AgentStatus = "idle" | "active" | "done";
 type LogEntry = { type: "log" | "result" | "error"; message: string };
 
 const INITIAL_STATUSES: Record<string, AgentStatus> = {
-  Pilot: "idle", Memory: "idle",
+  Pilot: "idle",
 };
 const INITIAL_LOGS: Record<string, LogEntry[]> = {
-  Pilot: [], Memory: [],
+  Pilot: [],
 };
 
 export function NavigatorPipelineView() {
