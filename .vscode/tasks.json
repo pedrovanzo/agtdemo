@@ -4,7 +4,7 @@
     {
       "label": "Start Backend",
       "type": "shell",
-      "command": ".venv/bin/uvicorn app.main:app --reload",
+      "command": "lsof -ti :8000 | xargs kill -9 2>/dev/null; .venv/bin/uvicorn app.main:app --reload",
       "options": {
         "cwd": "${workspaceFolder}/backend"
       },
@@ -34,8 +34,24 @@
       "problemMatcher": []
     },
     {
+      "label": "Start Ollama",
+      "type": "shell",
+      "command": "ollama serve",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "label": "Ollama",
+        "group": "build",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
       "label": "Start All",
-      "dependsOn": ["Start Backend", "Start Frontend"],
+      "dependsOn": ["Start Ollama", "Start Backend", "Start Frontend"],
       "dependsOrder": "parallel",
       "group": {
         "kind": "build",
