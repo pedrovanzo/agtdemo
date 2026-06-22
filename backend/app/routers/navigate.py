@@ -1,0 +1,309 @@
+import json
+import asyncio
+import threading
+import logging
+import os
+from pathlib import Path
+
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from app.config import OLLAMA_BASE_URL
+
+router = APIRouter(tags=["navigate"])
+logger = logging.getLogger(__name__)
+
+
+class NavigateRequest(BaseModel):
+    company: str
+    url: str
+    file_query: str
+    download_folder: str
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+# ── Capture browser-use internal logs and surface them in the UI ──────────────
+
+class _BULogHandler(logging.Handler):
+    """Forward browser-use WARNING+ logs to the SSE stream."""
+    def __init__(self, emit_fn):
+        super().__init__(level=logging.WARNING)
+        self._emit = emit_fn
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            self._emit({"type": "log", "agent": "Pilot",
+                        "message": f"   ⚠️ [bu] {msg[:200]}"})
+        except Exception:
+            pass
+
+
+def _run_pipeline_thread(
+    company: str,
+    url: str,
+    file_query: str,
+    download_folder: str,
+    queue: asyncio.Queue,
+    fastapi_loop: asyncio.AbstractEventLoop,
+) -> None:
+    def emit(event: dict) -> None:
+        fastapi_loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def done() -> None:
+        fastapi_loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    # Attach log forwarder to browser-use's logger tree
+    bu_handler = _BULogHandler(emit)
+    bu_root = logging.getLogger("browser_use")
+    bu_root.addHandler(bu_handler)
+
+    async def _pipeline() -> None:
+        from crewai import Agent as CrewAgent, Task, Crew
+        from langchain_ollama import ChatOllama
+
+        # ── Memory (placeholder) ───────────────────────────────────────
+        emit({"type": "agent_start", "agent": "Memory"})
+        emit({"type": "log", "agent": "Memory",
+              "message": "🧠 Long-term memory: disabled (dry-run mode)"})
+        emit({"type": "agent_done", "agent": "Memory"})
+
+        # ── Pilot ──────────────────────────────────────────────────────
+        emit({"type": "agent_start", "agent": "Pilot"})
+
+        try:
+            from app.config import OLLAMA_MODEL, OLLAMA_BASE_URL
+            from app.tools.browser_tools import (
+                BrowserSession,
+                GetPageContentTool,
+                NavigateToUrlTool,
+                ClickAndDownloadTool,
+            )
+
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"🌍 Initializing browser session..."})
+
+            # Initialize browser session
+            browser_session = BrowserSession()
+            browser_session.start()
+
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"🔧 Creating browser tools..."})
+
+            # Create tools
+            get_page_tool = GetPageContentTool(browser_session)
+            navigate_tool = NavigateToUrlTool(browser_session)
+            download_tool = ClickAndDownloadTool(browser_session, download_folder)
+
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"🤖 Initializing Ollama LLM ({OLLAMA_MODEL})..."})
+
+            Path(download_folder).mkdir(parents=True, exist_ok=True)
+
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"📋 Task: {file_query}"})
+
+            # Configure Ollama for CrewAI
+            import os as os_module
+
+            # Disable telemetry
+            os_module.environ['CREWAI_TELEMETRY_OPT_OUT'] = 'true'
+
+            # Configure CrewAI to use Ollama by setting the LLM model
+            # CrewAI v0.1+ uses environment variables or Agent parameter
+            os_module.environ['OLLAMA_MODEL'] = OLLAMA_MODEL
+            os_module.environ['OLLAMA_BASE_URL'] = OLLAMA_BASE_URL
+
+            from crewai import LLM
+
+            # CrewAI uses LiteLLM under the hood; Ollama models use the "ollama/" prefix
+            crewai_llm = LLM(
+                model=f"ollama/{OLLAMA_MODEL}",
+                base_url=OLLAMA_BASE_URL,
+                api_key="ollama",
+            )
+
+            # Navigator: browses pages to find the right URL
+            navigator_agent = CrewAgent(
+                role="Web Navigator",
+                goal="Find the Financial Statements URL on a company IR page",
+                backstory="You navigate investor relations websites and extract document URLs from results tables.",
+                tools=[get_page_tool, navigate_tool],
+                llm=crewai_llm,
+                verbose=True,
+                allow_delegation=False,
+                max_iter=6,
+            )
+
+            # Downloader: only has the download tool — cannot navigate anywhere else
+            downloader_agent = CrewAgent(
+                role="File Downloader",
+                goal="Download a PDF file given its URL",
+                backstory="You receive a URL and download it. You have no browsing tools.",
+                tools=[download_tool],
+                llm=crewai_llm,
+                verbose=True,
+                allow_delegation=False,
+                max_iter=2,
+            )
+
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"🚀 Starting navigation task..."})
+
+            # Create task
+            starting_point = (
+                f"Start at: {url}"
+                if url.strip()
+                else f"Search Google for '{company} investor relations'"
+            )
+
+            find_url_task = Task(
+                description=(
+                    f"Company: {company}\n"
+                    f"{starting_point}\n\n"
+                    f"1. Call navigate_to_url with the starting URL.\n"
+                    f"2. Call get_page_content to read the page.\n"
+                    f"3. Look at the results table. Find the most recent quarter row.\n"
+                    f"4. From that row, identify the URL under the FINANCIAL STATEMENTS column.\n\n"
+                    f"FINANCIAL STATEMENTS = the official quarterly report filed with the regulator "
+                    f"(ITR or DFP form). The column may also be titled 'ITR', 'DFP', or 'Quarterly Report'.\n\n"
+                    f"REJECT these columns even if they sound financial:\n"
+                    f"- Earnings Release (press release summary, NOT the official filing)\n"
+                    f"- Webcast, Audio, Video, Replay, Transcription, Presentation\n\n"
+                    f"Return: a single URL string only. No explanation."
+                ),
+                agent=navigator_agent,
+                expected_output="A single URL string pointing to the Financial Statements PDF (ITR/DFP).",
+            )
+
+            download_task = Task(
+                description=(
+                    f"You have been given a URL for a Financial Statements PDF.\n"
+                    f"Call click_and_download with that URL to save the file to: {download_folder}\n"
+                    f"Once the tool confirms the file is saved, return the filename and path. Stop there."
+                ),
+                agent=downloader_agent,
+                expected_output="The filename and full path of the downloaded PDF.",
+                context=[find_url_task],
+            )
+
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"🌐 Launching Chrome for: {company}"})
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"🤖 {OLLAMA_MODEL} via Ollama (local, 100% free)"})
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"🎯 {file_query[:120]}"})
+
+            # Create crew
+            crew = Crew(
+                agents=[navigator_agent, downloader_agent],
+                tasks=[find_url_task, download_task],
+                verbose=False,
+                memory=False,
+            )
+
+            emit({"type": "log", "agent": "Pilot",
+                  "message": "⏳ Running agent (this may take 60-120 seconds)..."})
+
+            try:
+                # Execute crew (this is synchronous, run in thread pool)
+                result = await asyncio.to_thread(crew.kickoff)
+
+                final_result = result.raw if hasattr(result, 'raw') else str(result)
+                emit({"type": "log", "agent": "Pilot",
+                      "message": "✅ Agent finished"})
+                emit({"type": "log", "agent": "Pilot",
+                      "message": f"📝 Result:\n{str(final_result)[:500]}"})
+                emit({"type": "agent_result", "agent": "Pilot", "data": str(final_result)})
+
+            except Exception as e:
+                emit({"type": "log", "agent": "Pilot",
+                      "message": f"❌ Error: {type(e).__name__}: {str(e)[:200]}"})
+                logger.error(f"Agent error: {e}", exc_info=True)
+                raise
+
+            finally:
+                # Clean up browser session
+                try:
+                    browser_session.close()
+                except Exception as e:
+                    logger.warning(f"Error closing browser: {e}")
+
+        except Exception as e:
+            logger.error("Pilot agent error", exc_info=True)
+            error_type = type(e).__name__
+            error_msg = str(e)
+
+            # Log detailed error information
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"❌ Exception type: {error_type}"})
+            emit({"type": "log", "agent": "Pilot",
+                  "message": f"❌ Error message: {error_msg[:300]}"})
+
+            if "items" in error_msg.lower():
+                emit({"type": "log", "agent": "Pilot",
+                      "message": "❌ Root cause: KeyError for 'items' - likely in message/dict access"})
+                emit({"type": "log", "agent": "Pilot",
+                      "message": "❌ Possible causes: 1) Ollama not responding properly, 2) ChatOllama invoke() format issue, 3) Page parsing error"})
+
+            emit({"type": "error", "message": f"Pilot failed: {error_type}: {error_msg[:200]}"})
+
+        emit({"type": "agent_done", "agent": "Pilot"})
+
+    try:
+        asyncio.run(_pipeline())
+    finally:
+        bu_root.removeHandler(bu_handler)
+        done()
+
+
+async def _stream_navigate(
+    company: str, url: str, file_query: str, download_folder: str
+):
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+    thread = threading.Thread(
+        target=_run_pipeline_thread,
+        args=(company, url, file_query, download_folder, queue, loop),
+        daemon=True,
+    )
+    thread.start()
+
+    while True:
+        event = await queue.get()
+        if event is None:
+            break
+        yield _sse(event)
+
+    thread.join(timeout=10)
+
+
+@router.post("/navigate")
+async def navigate(body: NavigateRequest):
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+    except Exception:
+        return StreamingResponse(
+            iter([_sse({"type": "error",
+                        "message": "Ollama not running. Start it with: ollama serve (or 'ollama pull llava' first to download the model)"})]),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return StreamingResponse(
+        _stream_navigate(
+            body.company,
+            body.url,
+            body.file_query,
+            os.path.expanduser(body.download_folder),
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

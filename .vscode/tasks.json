@@ -4,12 +4,9 @@
     {
       "label": "Start Backend",
       "type": "shell",
-      "command": "uvicorn app.main:app --reload",
+      "command": ".venv/bin/uvicorn app.main:app --reload",
       "options": {
-        "cwd": "${workspaceFolder}/backend",
-        "env": {
-          "PATH": "C:\\Users\\pedro_tc0tm74\\AppData\\Local\\Programs\\Python\\Python313\\Scripts;C:\\Users\\pedro_tc0tm74\\AppData\\Local\\Programs\\Python\\Python313;${env:PATH}"
-        }
+        "cwd": "${workspaceFolder}/backend"
       },
       "presentation": {
         "label": "Backend",

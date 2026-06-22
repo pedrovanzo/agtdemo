@@ -3,8 +3,14 @@ import os
 
 load_dotenv()
 
+# Ollama config (for Browser Navigator - free, local)
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# OpenRouter config (for Research Pipeline - optional)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 JWT_SECRET = os.getenv("JWT_SECRET", "insecure-default-change-me")
 APP_KILLSWITCH = os.getenv("APP_KILLSWITCH", "false").lower() == "true"

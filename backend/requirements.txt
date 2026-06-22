@@ -4,6 +4,11 @@ crewai==1.14.6
 crewai-tools==1.14.6
 langchain-community>=0.2.1
 langchain-openai>=0.1.8
+langchain-ollama>=0.1.0
+langchain-openrouter>=0.1.0
 python-dotenv>=1.0.1
 pyjwt>=2.9.0
 python-multipart>=0.0.9
+httpx>=0.24.0
+playwright>=1.44.0
+browser-use
