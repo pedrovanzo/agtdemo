@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { AgentCard } from "./AgentCard";
 import { streamNavigate, NavigatorEvent } from "@/lib/api";
 import { NavigatorAbout } from "./NavigatorAbout";
@@ -125,13 +126,21 @@ export function NavigatorPipelineView() {
     <div className="mx-auto max-w-4xl space-y-6 p-6">
 
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold">Multi-Agent Browser Navigator</h1>
-        <p className="mt-1 text-gray-500">
-          {showAbout
-            ? "How it works, what each agent does, and every constraint explained."
-            : "Name a company, describe the document — a vision agent navigates the web and downloads it."}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Multi-Agent Browser Navigator</h1>
+          <p className="mt-1 text-gray-500">
+            {showAbout
+              ? "How it works, what each agent does, and every constraint explained."
+              : "Name a company, describe the document — a vision agent navigates the web and downloads it."}
+          </p>
+        </div>
+        <Link
+          href="/"
+          className="flex-shrink-0 text-sm text-gray-400 hover:text-indigo-600 transition-colors"
+        >
+          ← All tools
+        </Link>
       </div>
 
       {showAbout ? (

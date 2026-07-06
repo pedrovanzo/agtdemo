@@ -6,14 +6,18 @@ const tools = [
     title: "Multi-Agent Research Pipeline",
     description:
       "Four specialized AI agents — Researcher, Analyst, Writer, and Editor — collaborate sequentially to produce a polished article on any topic you choose.",
-    status: "live" as const,
   },
   {
     href: "/browser-navigator",
     title: "Multi-Agent Browser Navigator",
     description:
       "An autonomous agent that opens a browser, navigates to a target URL, locates a specific document, and downloads it — no human clicks required.",
-    status: "coming-soon" as const,
+  },
+  {
+    href: "/offline-ai",
+    title: "Offline AI",
+    description:
+      "The memory math behind running a 7B-parameter model entirely locally via Ollama — no API keys, no cloud, no cost.",
   },
 ];
 
@@ -43,11 +47,6 @@ export default function Home() {
               href={tool.href}
               className="group relative bg-white rounded-2xl border border-gray-200 p-8 shadow-sm hover:shadow-md hover:border-indigo-300 transition-all duration-200"
             >
-              {tool.status === "coming-soon" && (
-                <span className="absolute top-4 right-4 text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2.5 py-0.5">
-                  Coming soon
-                </span>
-              )}
               <h2 className="text-xl font-semibold text-gray-900 mb-3 group-hover:text-indigo-700 transition-colors">
                 {tool.title}
               </h2>
