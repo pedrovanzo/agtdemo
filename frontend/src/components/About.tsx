@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 export function About() {
   return (
     <div className="space-y-8 text-sm text-gray-700">
@@ -186,6 +188,23 @@ export function About() {
             </div>
           ))}
         </div>
+      </section>
+
+      {/* Related */}
+      <section className="space-y-2">
+        <h2 className="text-base font-bold text-gray-900">Related</h2>
+        <Link
+          href="/offline-ai"
+          className="group block rounded-lg border border-gray-200 p-4 hover:border-indigo-300 hover:shadow-sm transition-all"
+        >
+          <p className="font-semibold text-gray-800 group-hover:text-indigo-700 transition-colors">
+            Offline AI →
+          </p>
+          <p className="text-gray-600 mt-0.5">
+            The memory math behind running a 7B-parameter model entirely locally via
+            Ollama — no API keys, no cloud, no cost.
+          </p>
+        </Link>
       </section>
 
     </div>

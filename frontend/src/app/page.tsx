@@ -13,12 +13,6 @@ const tools = [
     description:
       "An autonomous agent that opens a browser, navigates to a target URL, locates a specific document, and downloads it — no human clicks required.",
   },
-  {
-    href: "/offline-ai",
-    title: "Offline AI",
-    description:
-      "The memory math behind running a 7B-parameter model entirely locally via Ollama — no API keys, no cloud, no cost.",
-  },
 ];
 
 export default function Home() {
