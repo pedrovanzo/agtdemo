@@ -13,6 +13,12 @@ const tools = [
     description:
       "An autonomous agent that opens a browser, navigates to a target URL, locates a specific document, and downloads it — no human clicks required.",
   },
+  {
+    href: "/agentic-code",
+    title: "Agentic Code",
+    description:
+      "Describe what to build — Intake, Planner, and Coding agents plan and write frontend code with you approving every plan, file, and batch. 100% offline, no API keys.",
+  },
 ];
 
 export default function Home() {

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from app.middleware.killswitch import KillswitchMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.routers import research, admin, navigate
+from app.routers import research, admin, navigate, agentic_code
 
 app = FastAPI(
     title="AgentDemo API",
@@ -25,6 +25,7 @@ app.add_middleware(
 app.include_router(research.router)
 app.include_router(admin.router)
 app.include_router(navigate.router)
+app.include_router(agentic_code.router)
 
 
 @app.get("/")

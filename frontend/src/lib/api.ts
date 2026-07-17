@@ -91,6 +91,83 @@ export async function checkCredentials(): Promise<CredentialsStatus> {
   return res.json();
 }
 
+// ─── Agentic Code (future backend contract — not yet wired) ──────────────────
+// This tool needs mid-stream human input (plan approval, per-file permission,
+// batch review), which the one-shot POST -> SSE pattern above can't express.
+// These types capture the intended session-based protocol (see ADR 0003) so
+// the UI and a future backend agree on shape. The current UI drives itself
+// from local mock state — nothing here issues a network call yet.
+
+export type FileOperation = "create" | "edit" | "delete";
+
+export type AgenticCodeFileOp = {
+  operation: FileOperation;
+  path: string;
+  preview: string;
+};
+
+export type AgenticCodeTask = {
+  id: string;
+  title: string;
+  ops: AgenticCodeFileOp[];
+};
+
+export type AgenticCodePlan = {
+  summary: string;
+  tasks: AgenticCodeTask[];
+};
+
+export type AgenticCodeOutputKind = "html" | "multi_page" | "framework";
+
+export type AgenticCodeStage =
+  | "input"
+  | "clarifying"
+  | "naming"
+  | "planning"
+  | "plan_review"
+  | "building"
+  | "batch_review"
+  | "executing"
+  | "done";
+
+export type AgenticCodeEvent =
+  | { type: "clarify_question"; question: string }
+  | { type: "plan_ready"; plan: AgenticCodePlan }
+  | { type: "permission_request"; taskId: string; op: AgenticCodeFileOp }
+  | { type: "batch_ready"; taskId: string; taskTitle: string; ops: AgenticCodeFileOp[] }
+  | { type: "execution_ready"; outputKind: AgenticCodeOutputKind; paths: string[]; runCommand?: string }
+  | { type: "log"; agent: string; message: string }
+  | { type: "error"; message: string };
+
+export type AgenticCodeAction =
+  | { type: "answer_clarification"; answer: string }
+  | { type: "approve_plan" }
+  | { type: "reject_plan"; feedback: string }
+  | { type: "cancel" }
+  | { type: "allow_permission" }
+  | { type: "deny_permission" }
+  | { type: "approve_batch" }
+  | { type: "request_changes"; feedback: string };
+
+// First real wire (see ADR 0003 discussion): one plain, one-shot backend call
+// that asks the local model for a clarifying question + a sample code
+// snippet. No streaming, no session, no file writes yet — everything else
+// in the tool is still mocked.
+export type AgenticCodePreview = { question: string; snippet: string };
+
+export async function previewAgenticCode(request: string): Promise<AgenticCodePreview> {
+  const res = await fetch(`${API_URL}/agentic-code/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ request }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    throw new Error(err.detail ?? `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function streamResearch(
   topic: string,
   credentials: UserCredentials,
