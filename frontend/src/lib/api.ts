@@ -149,23 +149,60 @@ export type AgenticCodeAction =
   | { type: "approve_batch" }
   | { type: "request_changes"; feedback: string };
 
-// First real wire (see ADR 0003 discussion): one plain, one-shot backend call
-// that asks the local model for a clarifying question + a sample code
-// snippet. No streaming, no session, no file writes yet — everything else
-// in the tool is still mocked.
-export type AgenticCodePreview = { question: string; snippet: string };
+// First real wire (see ADR 0003 discussion): SSE-streamed backend call that
+// asks the local model for a clarifying question, then a sample code
+// snippet — each as its own event, so the frontend can render (and time)
+// them as they actually complete instead of both landing at once. No
+// session, no file writes yet — everything else in the tool is still mocked.
+export type AgenticCodePreviewEvent =
+  | { type: "log"; message: string }
+  | { type: "question_ready"; question: string }
+  | { type: "snippet_ready"; snippet: string }
+  | { type: "error"; message: string };
 
-export async function previewAgenticCode(request: string): Promise<AgenticCodePreview> {
-  const res = await fetch(`${API_URL}/agentic-code/preview`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ request }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
-    throw new Error(err.detail ?? `HTTP ${res.status}`);
+export async function streamAgenticCodePreview(
+  request: string,
+  onEvent: (e: AgenticCodePreviewEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    const res = await fetch(`${API_URL}/agentic-code/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request }),
+      signal,
+    });
+
+    if (!res.ok || !res.body) {
+      const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+      onEvent({ type: "error", message: err.detail ?? `HTTP ${res.status}` });
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            onEvent(JSON.parse(line.slice(6)) as AgenticCodePreviewEvent);
+          } catch (e) {
+            console.error("Failed to parse SSE line:", line, e);
+          }
+        }
+      }
+    } finally {
+      reader.cancel();
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") return; // user stopped — not an error
+    onEvent({ type: "error", message: `Connection failed: ${err instanceof Error ? err.message : "Unknown error"}` });
   }
-  return res.json();
 }
 
 export async function streamResearch(

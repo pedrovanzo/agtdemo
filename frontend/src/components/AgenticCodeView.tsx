@@ -8,16 +8,16 @@ import {
   AgenticCodeOutputKind,
   AgenticCodePlan,
   AgenticCodeStage,
-  previewAgenticCode,
+  streamAgenticCodePreview,
 } from "@/lib/api";
 import { AgenticCodeAbout } from "./AgenticCodeAbout";
 import { AgenticCodeSessionSwitcher, AgenticCodeSessionSummary } from "./AgenticCodeSessionSwitcher";
 
 // Most of this component is still driven by local mock state — see the
 // "not yet wired" note in lib/api.ts. The one real piece so far: the initial
-// Intake question + a sample snippet come from a real call to the local
-// model via previewAgenticCode(). Everything after that (plan, build,
-// review, execute) is still mocked.
+// Intake question + a sample snippet stream in from a real call to the
+// local model via streamAgenticCodePreview(). Everything after that (plan,
+// build, review, execute) is still mocked.
 
 type PlanResolution = "pending" | "approved" | "changes_requested" | "cancelled";
 type PermissionResolution = "pending" | "allowed" | "denied";
@@ -907,13 +907,23 @@ export function AgenticCodeView() {
     pushText(sid, "Intake", "Reading your request…");
 
     try {
-      const { question, snippet } = await previewAgenticCode(text);
-      pushText(sid, "Intake", question);
-      appendEntry(sid, makeEntry({ kind: "snippet", agent: "Coding Agent", code: snippet }));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      pushText(sid, "Intake", `Couldn't reach the model (${message}). Is Ollama running?`);
-      patchSession(sid, { stage: "input" });
+      await streamAgenticCodePreview(text, (event) => {
+        switch (event.type) {
+          case "log":
+            pushText(sid, "Intake", event.message);
+            break;
+          case "question_ready":
+            pushText(sid, "Intake", event.question);
+            break;
+          case "snippet_ready":
+            appendEntry(sid, makeEntry({ kind: "snippet", agent: "Coding Agent", code: event.snippet }));
+            break;
+          case "error":
+            pushText(sid, "Intake", event.message);
+            patchSession(sid, { stage: "input" });
+            break;
+        }
+      });
     } finally {
       patchSession(sid, { awaitingModel: false });
     }

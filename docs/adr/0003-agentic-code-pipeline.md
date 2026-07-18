@@ -15,12 +15,12 @@ Three LLM agents plus one deterministic step:
 
 1. **Intake Agent** — turns a raw chat request into clean, structured instructions. Can ask clarifying questions back to the user when the request is ambiguous, rather than guessing and handing off. This is its distinguishing job, not just text cleanup.
 2. **Planner Agent** (project manager) — turns clean instructions into an execution plan divided into tasks. Owns **persistent, project-scoped memory** (conventions chosen, file structure, past decisions) that survives across sessions. On a rejected plan, revises via a **targeted diff against the existing plan**, not a full regeneration — feedback on task 3 shouldn't reshuffle tasks 1 and 2.
-3. **Coding Agent** — implements the approved plan task by task. Every file create/edit/delete is a separate permission prompt (maximally granular — mirrors Claude Code's own tool-permission UX, not batched per task).
+3. **Coding Agent** — implements the approved plan task by task. Permission is batched per task: one Allow/Deny prompt covers all file creates/edits/deletes in that task's batch, not one prompt per file. (Revised from an earlier maximally-granular per-file design once real backend wiring made the prompt volume concrete.)
 4. **Executor** (non-LLM, deterministic) — after the final code review is approved: opens plain HTML directly in a browser; lists file paths in chat for the user to open manually when multiple pages are involved; prints the run command (e.g. `npm run dev`) for framework-based output instead of executing it on the user's behalf.
 
 ### Human gates
 - **Plan approval** — approve → build; reject with feedback → targeted re-plan; cancel → discard the current task and return to input (project memory is unaffected).
-- **Per-file permission** — every file operation during build is allowed/denied individually.
+- **Per-task permission** — each task's batch of file operations is allowed/denied as one unit.
 - **Code review per task-batch** — after each batch of files that composes one task: approve → next batch or execution; request changes (free text) → back to the Coding Agent with that feedback.
 - **Post-execution review** — the user checks the rendered/running result manually. Not automated in this scope, though the existing Browser Navigator's vision agent is a plausible future extension for this step.
 
@@ -38,5 +38,5 @@ Every project the tool builds lands at a fixed, predictable path: **`agtdemo/dis
 ## Consequences
 - No API-key inputs anywhere in this tool's UI; the homepage card states the offline-only constraint explicitly, unlike Research (OpenRouter/Serper) and Browser Navigator (Ollama already, but optional cloud fallback historically discussed).
 - The existing one-shot `POST → SSE stream` pattern used by Research and Browser Navigator does not fit this tool, because it needs mid-stream human input (plan approval, per-file permission, batch review). The eventual backend will need a session-based design (start a session, stream agent events, accept out-of-band user actions against that session) rather than a single fire-and-collect call.
-- Maximal per-file permission granularity means more prompts during a build than a batched alternative would produce; accepted as the safer, more Claude-Code-consistent default.
+- Batched per-task permission means fewer prompts during a build than per-file granularity would produce, at the cost of coarser control if only one file in a task's batch is objectionable.
 - Model choice, real backend persistence, and disk-state reconciliation on session resume (what happens if files changed outside the tool between sessions) are explicitly deferred and not solved by this ADR.
