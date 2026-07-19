@@ -19,5 +19,8 @@ out/
 .DS_Store
 Thumbs.db
 
+# Agentic Code output — generated projects, not source
+/dist/
+
 # Claude Code
 .claude

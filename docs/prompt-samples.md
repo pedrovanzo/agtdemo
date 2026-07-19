@@ -35,3 +35,21 @@ Create a multi-file flashcard application for studying. The architecture should 
 
 Prompt 9: Recipe Book Manager
 Generate a multi-file Recipe Book application. The app should have an main entry point and separate files for the application state handling. It must allow users to view a list of recipes, click a recipe to view its full details (ingredients and steps), add a new recipe via a modal form, and include a simple text search input that filters the recipe list in real-time.
+
+Group 4: Backend / Script Level
+Goal: Evaluate the model's grasp of standard-library-only Python, local file/data persistence, and small CLI tool structure — once real backend generation exists (not yet wired; frontend-only today per ADR 0003).
+
+Prompt 10: Text-Based Todo List Manager
+Create a command-line Todo List application in Python. The app should store tasks in a local JSON file so data persists between runs. It needs to allow the user to: 1) Add a task with a title and optional description, 2) View all active tasks, 3) Mark a task as complete, and 4) Delete a task. Keep the code in a single file using only the Python standard library (json, os).
+
+Prompt 11: Local File Rename & Organizer Utility
+Write a Python script that organizes a target folder by sorting files into subdirectories based on their file extensions (e.g., all .jpg and .png files go into an "Images" folder, .pdf and .docx into "Documents"). If a file doesn't match a common category, move it to a "Miscellaneous" folder. The script should prompt the user for the folder path and use only the os, shutil, and pathlib standard libraries.
+
+Prompt 12: Markdown to HTML Static Page Generator
+Build a simple Python script that reads a specific local Markdown file (document.md) and converts it into a basic, styled HTML file (document.html). It should handle standard Markdown headers (#, ##), bullet points (*), bold text (**), and plain paragraphs. Include a simple, clean CSS block embedded in the generated HTML header for basic readability. Use only Python's built-in string manipulation and file I/O operations.
+
+Prompt 13: Personal Expense Tracker & CSV Logger
+Generate a command-line script to log and track daily expenses. The user should be able to input an expense amount, a category (e.g., Food, Transport, Utilities), and a brief note. Append each entry to a local expenses.csv file with a timestamp. Additionally, add a "View Summary" feature that reads the CSV and prints the total amount spent per category. Use only the built-in csv and datetime modules.
+
+Prompt 14: System Performance Monitor & Alerting Tool
+Create a Python script that checks the local machine's current CPU utilization, memory usage, and available disk space. Print these metrics to the console in a clean format every 5 seconds. If CPU or memory usage exceeds 80%, print a high-visibility warning message. Since this runs locally, use the standard library where possible, or specify if a lightweight library like psutil is required for cross-platform hardware access.

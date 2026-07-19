@@ -91,12 +91,10 @@ export async function checkCredentials(): Promise<CredentialsStatus> {
   return res.json();
 }
 
-// ─── Agentic Code (future backend contract — not yet wired) ──────────────────
-// This tool needs mid-stream human input (plan approval, per-file permission,
-// batch review), which the one-shot POST -> SSE pattern above can't express.
-// These types capture the intended session-based protocol (see ADR 0003) so
-// the UI and a future backend agree on shape. The current UI drives itself
-// from local mock state — nothing here issues a network call yet.
+// ─── Agentic Code ──────────────────────────────────────────────────────────
+// Single-file-per-project MVP (see ADR 0003's revamp section): one request
+// becomes one self-contained HTML file, gated by permission before write and
+// review after. No separate Planner/plan stage — every call here is real.
 
 export type FileOperation = "create" | "edit" | "delete";
 
@@ -106,76 +104,43 @@ export type AgenticCodeFileOp = {
   preview: string;
 };
 
-export type AgenticCodeTask = {
-  id: string;
-  title: string;
-  ops: AgenticCodeFileOp[];
-};
-
-export type AgenticCodePlan = {
-  summary: string;
-  tasks: AgenticCodeTask[];
-};
-
-export type AgenticCodeOutputKind = "html" | "multi_page" | "framework";
-
 export type AgenticCodeStage =
   | "input"
   | "clarifying"
   | "naming"
-  | "planning"
-  | "plan_review"
   | "building"
   | "batch_review"
   | "executing"
   | "done";
 
-export type AgenticCodeEvent =
-  | { type: "clarify_question"; question: string }
-  | { type: "plan_ready"; plan: AgenticCodePlan }
-  | { type: "permission_request"; taskId: string; op: AgenticCodeFileOp }
-  | { type: "batch_ready"; taskId: string; taskTitle: string; ops: AgenticCodeFileOp[] }
-  | { type: "execution_ready"; outputKind: AgenticCodeOutputKind; paths: string[]; runCommand?: string }
-  | { type: "log"; agent: string; message: string }
-  | { type: "error"; message: string };
-
-export type AgenticCodeAction =
-  | { type: "answer_clarification"; answer: string }
-  | { type: "approve_plan" }
-  | { type: "reject_plan"; feedback: string }
-  | { type: "cancel" }
-  | { type: "allow_permission" }
-  | { type: "deny_permission" }
-  | { type: "approve_batch" }
-  | { type: "request_changes"; feedback: string };
-
 // First real wire (see ADR 0003 discussion): SSE-streamed backend call that
-// asks the local model for a clarifying question, then a sample code
-// snippet — each as its own event, so the frontend can render (and time)
-// them as they actually complete instead of both landing at once. No
-// session, no file writes yet — everything else in the tool is still mocked.
+// asks the local model for Intake's clarifying question. Real code
+// generation happens later, per task, via streamWriteTask() below, once
+// the user approves a plan and grants permission for that task's file ops.
 export type AgenticCodePreviewEvent =
-  | { type: "log"; message: string }
   | { type: "question_ready"; question: string }
-  | { type: "snippet_ready"; snippet: string }
   | { type: "error"; message: string };
 
-export async function streamAgenticCodePreview(
-  request: string,
-  onEvent: (e: AgenticCodePreviewEvent) => void,
+// Shared SSE consumer for the agentic-code endpoints below (preview,
+// write-task) — fetch + reader + decoder loop, parses `data: {json}\n\n`
+// lines and hands each parsed event to onEvent.
+async function consumeAgenticCodeSSE<E extends { type: string }>(
+  path: string,
+  body: unknown,
+  onEvent: (e: E) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   try {
-    const res = await fetch(`${API_URL}/agentic-code/preview`, {
+    const res = await fetch(`${API_URL}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request }),
+      body: JSON.stringify(body),
       signal,
     });
 
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => ({ detail: "Unknown error" }));
-      onEvent({ type: "error", message: err.detail ?? `HTTP ${res.status}` });
+      onEvent({ type: "error", message: err.detail ?? `HTTP ${res.status}` } as unknown as E);
       return;
     }
 
@@ -190,7 +155,7 @@ export async function streamAgenticCodePreview(
         for (const line of chunk.split("\n")) {
           if (!line.startsWith("data: ")) continue;
           try {
-            onEvent(JSON.parse(line.slice(6)) as AgenticCodePreviewEvent);
+            onEvent(JSON.parse(line.slice(6)) as E);
           } catch (e) {
             console.error("Failed to parse SSE line:", line, e);
           }
@@ -201,8 +166,59 @@ export async function streamAgenticCodePreview(
     }
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") return; // user stopped — not an error
-    onEvent({ type: "error", message: `Connection failed: ${err instanceof Error ? err.message : "Unknown error"}` });
+    onEvent({ type: "error", message: `Connection failed: ${err instanceof Error ? err.message : "Unknown error"}` } as unknown as E);
   }
+}
+
+export async function streamAgenticCodePreview(
+  request: string,
+  onEvent: (e: AgenticCodePreviewEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return consumeAgenticCodeSSE<AgenticCodePreviewEvent>("/agentic-code/preview", { request }, onEvent, signal);
+}
+
+// Second real wire: resolves the numbered dist/<n>-<slug>/ project folder,
+// then writes real files for one approved task's file ops, generating each
+// file's content via a harness-augmented Ollama call and persisting it to
+// disk. Plan/task decomposition itself is still mocked — only the folder
+// creation and the file content + write are real.
+export type CreateProjectResult = { dir: string };
+
+export async function createAgenticCodeProject(name: string): Promise<CreateProjectResult> {
+  const res = await fetch(`${API_URL}/agentic-code/create-project`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    throw new Error(err.detail ?? `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export type WriteTaskEvent =
+  | { type: "log"; message: string }
+  | { type: "file_written"; path: string }
+  | { type: "task_complete" }
+  | { type: "error"; message: string };
+
+export async function streamWriteTask(
+  projectDir: string,
+  requestContext: string,
+  taskTitle: string,
+  ops: AgenticCodeFileOp[],
+  feedback: string | null,
+  onEvent: (e: WriteTaskEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return consumeAgenticCodeSSE<WriteTaskEvent>(
+    "/agentic-code/write-task",
+    { project_dir: projectDir, request_context: requestContext, task_title: taskTitle, ops, feedback },
+    onEvent,
+    signal,
+  );
 }
 
 export async function streamResearch(

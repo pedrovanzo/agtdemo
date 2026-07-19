@@ -5,21 +5,18 @@ import Link from "next/link";
 import { Check, Copy, Zap } from "lucide-react";
 import {
   AgenticCodeFileOp,
-  AgenticCodeOutputKind,
-  AgenticCodePlan,
   AgenticCodeStage,
+  createAgenticCodeProject,
   streamAgenticCodePreview,
+  streamWriteTask,
 } from "@/lib/api";
 import { AgenticCodeAbout } from "./AgenticCodeAbout";
 import { AgenticCodeSessionSwitcher, AgenticCodeSessionSummary } from "./AgenticCodeSessionSwitcher";
 
-// Most of this component is still driven by local mock state — see the
-// "not yet wired" note in lib/api.ts. The one real piece so far: the initial
-// Intake question + a sample snippet stream in from a real call to the
-// local model via streamAgenticCodePreview(). Everything after that (plan,
-// build, review, execute) is still mocked.
+// Single-file-per-project MVP (see ADR 0003's revamp section). No mocked
+// stage — Intake's question, project creation, the file write, and the
+// feedback loop are all real calls to the local model / real disk writes.
 
-type PlanResolution = "pending" | "approved" | "changes_requested" | "cancelled";
 type PermissionResolution = "pending" | "allowed" | "denied";
 type BatchResolution = "pending" | "approved" | "changes_requested";
 type ExecutorResolution = "pending" | "done";
@@ -27,33 +24,23 @@ type ExecutorResolution = "pending" | "done";
 type ChatEntry = { id: string; createdAt: number } & (
   | { kind: "user"; text: string }
   | { kind: "text"; agent: string; text: string }
-  | { kind: "snippet"; agent: string; code: string }
-  | { kind: "plan"; agent: string; plan: AgenticCodePlan; revision: number; projectName: string; resolution: PlanResolution }
-  | { kind: "permission"; agent: string; taskTitle: string; op: AgenticCodeFileOp; resolution: PermissionResolution }
+  | { kind: "permission"; agent: string; taskTitle: string; ops: AgenticCodeFileOp[]; resolution: PermissionResolution }
   | { kind: "batch"; agent: string; taskTitle: string; ops: AgenticCodeFileOp[]; resolution: BatchResolution }
-  | {
-      kind: "executor";
-      agent: string;
-      outputKind: AgenticCodeOutputKind;
-      paths: string[];
-      runCommand?: string;
-      resolution: ExecutorResolution;
-    }
+  | { kind: "executor"; agent: string; paths: string[]; resolution: ExecutorResolution }
 );
 
 type SessionState = {
   stage: AgenticCodeStage;
   entries: ChatEntry[];
   pendingEntryId: string | null;
-  plan: AgenticCodePlan | null;
-  revisionCount: number;
-  taskIndex: number;
-  opIndex: number;
-  outputKind: AgenticCodeOutputKind;
+  fileOp: AgenticCodeFileOp | null;
   composerText: string;
-  feedbackTarget: "plan" | "batch" | null;
+  feedbackTarget: "batch" | null;
   projectName: string | null;
+  requestText: string | null;
+  pendingFeedback: string | null;
   awaitingModel: boolean;
+  modelWorkStartedAt: number | null;
 };
 
 let idSeq = 0;
@@ -71,15 +58,14 @@ function freshSession(): SessionState {
     stage: "input",
     entries: [],
     pendingEntryId: null,
-    plan: null,
-    revisionCount: 0,
-    taskIndex: 0,
-    opIndex: 0,
-    outputKind: "html",
+    fileOp: null,
     composerText: "",
     feedbackTarget: null,
     projectName: null,
+    requestText: null,
+    pendingFeedback: null,
     awaitingModel: false,
+    modelWorkStartedAt: null,
   };
 }
 
@@ -116,199 +102,12 @@ function extractProjectName(text: string): string | null {
   return null;
 }
 
-function buildMockPlan(outputKind: AgenticCodeOutputKind): AgenticCodePlan {
-  if (outputKind === "framework") {
-    return {
-      summary: "A Next.js landing page with a hero, feature grid, and a working contact form.",
-      tasks: [
-        {
-          id: "t1",
-          title: "Scaffold Next.js app + Tailwind config",
-          ops: [
-            { operation: "create", path: "app/layout.tsx", preview: "export default function RootLayout({ children }) { ... }" },
-            { operation: "create", path: "tailwind.config.ts", preview: "module.exports = { content: [\"./app/**/*.tsx\"] }" },
-          ],
-        },
-        {
-          id: "t2",
-          title: "Build hero + feature grid",
-          ops: [
-            { operation: "create", path: "app/page.tsx", preview: "<Hero />\n<FeatureGrid />" },
-            { operation: "create", path: "components/FeatureGrid.tsx", preview: "export function FeatureGrid() { ... }" },
-          ],
-        },
-        {
-          id: "t3",
-          title: "Add contact form with client-side validation",
-          ops: [
-            { operation: "create", path: "components/ContactForm.tsx", preview: "const [errors, setErrors] = useState({})" },
-            { operation: "edit", path: "app/page.tsx", preview: "+ <ContactForm />" },
-          ],
-        },
-      ],
-    };
-  }
-
-  return {
-    summary: "A static portfolio site with a hero, project grid, and contact section, styled with Tailwind via CDN.",
-    tasks: [
-      {
-        id: "t1",
-        title: "Scaffold page structure + Tailwind CDN",
-        ops: [
-          { operation: "create", path: "index.html", preview: "<!doctype html>\n<script src=\"https://cdn.tailwindcss.com\"></script>" },
-          { operation: "create", path: "styles/custom.css", preview: ".hero { background: radial-gradient(...); }" },
-        ],
-      },
-      {
-        id: "t2",
-        title: "Build hero + project grid sections",
-        ops: [
-          { operation: "edit", path: "index.html", preview: "+ <section id=\"projects\">...</section>" },
-          { operation: "create", path: "scripts/projects.js", preview: "const projects = [{ title: \"...\" }]" },
-        ],
-      },
-      {
-        id: "t3",
-        title: "Add contact section",
-        ops:
-          outputKind === "multi_page"
-            ? [{ operation: "create", path: "contact.html", preview: "<!doctype html>\n<form>...</form>" }]
-            : [{ operation: "edit", path: "index.html", preview: "+ <section id=\"contact\">...</section>" }],
-      },
-    ],
-  };
-}
-
-const MINUTE = 60 * 1000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-
-function createInitialSessions(): Record<string, SessionState> {
-  const todoPlan = buildMockPlan("framework");
-  const todoBase = Date.now() - 2 * HOUR;
-  const todoPlanEntry = makeEntry(
-    { kind: "plan" as const, agent: "Planner", plan: todoPlan, revision: 0, projectName: "todo-app-nextjs", resolution: "pending" as PlanResolution },
-    todoBase + 2 * MINUTE,
-  );
-
-  const landingPlan = buildMockPlan("html");
-  const landingBase = Date.now() - DAY;
-
-  return {
-    "s-current": freshSession(),
-
-    "s-todo": {
-      ...freshSession(),
-      stage: "plan_review",
-      outputKind: "framework",
-      plan: todoPlan,
-      pendingEntryId: todoPlanEntry.id,
-      projectName: "todo-app-nextjs",
-      entries: [
-        makeEntry({ kind: "user", text: "A Next.js todo app with local storage persistence, call it todo-app-nextjs" }, todoBase),
-        makeEntry({ kind: "text", agent: "Intake", text: "Parsed request — Next.js project requested." }, todoBase + MINUTE),
-        todoPlanEntry,
-      ],
-    },
-
-    "s-landing": {
-      ...freshSession(),
-      stage: "done",
-      outputKind: "html",
-      plan: landingPlan,
-      taskIndex: landingPlan.tasks.length,
-      projectName: "coffee-landing-page",
-      entries: [
-        makeEntry({ kind: "user", text: "A one-page hero landing for a coffee brand, name it coffee-landing-page" }, landingBase),
-        makeEntry({ kind: "text", agent: "Intake", text: "Parsed request — single static page, no framework." }, landingBase + MINUTE),
-        makeEntry(
-          { kind: "plan", agent: "Planner", plan: landingPlan, revision: 0, projectName: "coffee-landing-page", resolution: "approved" as PlanResolution },
-          landingBase + 2 * MINUTE,
-        ),
-        makeEntry({ kind: "text", agent: "Coding Agent", text: "All tasks complete." }, landingBase + 6 * MINUTE),
-        makeEntry(
-          {
-            kind: "executor",
-            agent: "Executor",
-            outputKind: "html" as AgenticCodeOutputKind,
-            paths: [`${projectPath("coffee-landing-page")}/index.html`],
-            resolution: "done" as ExecutorResolution,
-          },
-          landingBase + 7 * MINUTE,
-        ),
-        makeEntry(
-          { kind: "text", agent: "Executor", text: `Opened ${projectPath("coffee-landing-page")}/index.html in browser.` },
-          landingBase + 7 * MINUTE + 5000,
-        ),
-      ],
-    },
-  };
-}
-
 const INITIAL_SESSION_META: AgenticCodeSessionSummary[] = [
   { id: "s-current", name: "New session", lastActive: "now", status: "idle", archived: false },
-  { id: "s-todo", name: "todo-app-nextjs", lastActive: "2h ago", status: "in_progress", archived: false },
-  { id: "s-landing", name: "coffee-landing-page", lastActive: "yesterday", status: "done", archived: false },
 ];
 
-const STEP_DEFS = [
-  { key: "intake", label: "Input" },
-  { key: "plan", label: "Plan" },
-  { key: "build", label: "Build" },
-  { key: "execute", label: "Execute" },
-] as const;
-
-function stageToStepIndex(stage: AgenticCodeStage): number {
-  switch (stage) {
-    case "input":
-    case "clarifying":
-    case "naming":
-      return 0;
-    case "planning":
-    case "plan_review":
-      return 1;
-    case "building":
-    case "batch_review":
-      return 2;
-    case "executing":
-      return 3;
-    case "done":
-      return 4;
-  }
-}
-
-function Stepper({ stage }: { stage: AgenticCodeStage }) {
-  const current = stageToStepIndex(stage);
-  return (
-    <div className="flex items-center">
-      {STEP_DEFS.map((step, i) => {
-        const status = i < current ? "done" : i === current ? "active" : "idle";
-        return (
-          <div key={step.key} className="flex flex-1 items-center last:flex-none">
-            <div
-              className={[
-                "flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border-2 text-xs font-bold",
-                status === "done"
-                  ? "border-green-400 bg-green-50 text-green-700"
-                  : status === "active"
-                    ? "border-blue-400 bg-blue-50 text-blue-700 animate-pulse"
-                    : "border-gray-200 bg-gray-50 text-gray-400",
-              ].join(" ")}
-            >
-              {i + 1}
-            </div>
-            <span className={`ml-2 text-xs font-semibold ${status === "idle" ? "text-gray-400" : "text-gray-700"}`}>
-              {step.label}
-            </span>
-            {i < STEP_DEFS.length - 1 && (
-              <div className={`mx-3 h-px flex-1 ${i < current ? "bg-green-300" : "bg-gray-200"}`} />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
+function createInitialSessions(): Record<string, SessionState> {
+  return { "s-current": freshSession() };
 }
 
 function formatDuration(ms: number): string {
@@ -382,12 +181,21 @@ function opBadge(op: AgenticCodeFileOp["operation"]) {
   );
 }
 
+function ElapsedTimer({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
+  return <>Working… {seconds}s elapsed</>;
+}
+
 const RESOLUTION_BADGE: Record<string, { label: string; className: string }> = {
   approved: { label: "✓ Approved", className: "text-green-700 bg-green-50" },
   allowed: { label: "✓ Allowed", className: "text-green-700 bg-green-50" },
   denied: { label: "✗ Denied", className: "text-red-700 bg-red-50" },
   changes_requested: { label: "↺ Changes requested", className: "text-amber-700 bg-amber-50" },
-  cancelled: { label: "✗ Cancelled", className: "text-gray-500 bg-gray-100" },
   done: { label: "✓ Done", className: "text-green-700 bg-green-50" },
 };
 
@@ -420,79 +228,6 @@ function CardShell({
   );
 }
 
-function PlanCard({
-  entry,
-  onApprove,
-  onRequestChanges,
-  onCancel,
-  locked,
-}: {
-  entry: Extract<ChatEntry, { kind: "plan" }>;
-  onApprove: () => void;
-  onRequestChanges: () => void;
-  onCancel: () => void;
-  locked: boolean;
-}) {
-  const pending = entry.resolution === "pending";
-  return (
-    <CardShell agent={entry.agent} resolution={entry.resolution}>
-      <p className="mb-1 text-xs font-semibold text-gray-700">
-        Plan{entry.revision > 0 ? ` (revision ${entry.revision})` : ""}
-      </p>
-      <p className="mb-2 font-mono text-[11px] text-gray-400">{projectPath(entry.projectName)}/</p>
-      <p className="mb-3 text-sm text-gray-700">{entry.plan.summary}</p>
-      <div className="space-y-2">
-        {entry.plan.tasks.map((task, i) => (
-          <div key={task.id} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-            <p className="text-sm font-semibold text-gray-800">
-              {i + 1}. {task.title}
-            </p>
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {task.ops.map((op, j) => (
-                <span
-                  key={j}
-                  className="flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-600"
-                >
-                  {opBadge(op.operation)}
-                  <code className="text-gray-700">{op.path}</code>
-                </span>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-      {pending && locked && (
-        <p className="mt-3 border-t border-gray-100 pt-3 text-xs italic text-gray-400">
-          Waiting for your feedback below…
-        </p>
-      )}
-      {pending && !locked && (
-        <div className="mt-3 flex items-center justify-between border-t border-gray-100 pt-3">
-          <button type="button" onClick={onCancel} className="text-xs font-semibold text-gray-400 hover:text-red-600 transition-colors">
-            Cancel
-          </button>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onRequestChanges}
-              className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 transition-colors"
-            >
-              Request changes
-            </button>
-            <button
-              type="button"
-              onClick={onApprove}
-              className="rounded-lg bg-green-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-green-700 transition-colors"
-            >
-              Approve plan
-            </button>
-          </div>
-        </div>
-      )}
-    </CardShell>
-  );
-}
-
 function PermissionCard({
   entry,
   onAllow,
@@ -506,15 +241,18 @@ function PermissionCard({
   return (
     <CardShell agent={entry.agent} resolution={entry.resolution}>
       <p className="mb-2 text-xs text-gray-500">{entry.taskTitle}</p>
-      <div className="flex items-center gap-2">
-        {opBadge(entry.op.operation)}
-        <code className="text-sm font-semibold text-gray-800">{entry.op.path}</code>
+      <div className="space-y-1.5">
+        {entry.ops.map((op, i) => (
+          <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm">
+            {opBadge(op.operation)}
+            <code className="text-gray-700">{op.path}</code>
+          </div>
+        ))}
       </div>
-      <pre className="mt-2 overflow-x-auto rounded bg-gray-900 p-3 text-xs text-green-400">{entry.op.preview}</pre>
       {pending && (
         <>
           <p className="mt-2 text-xs text-amber-700">
-            Coding Agent wants permission to {entry.op.operation} this file.
+            Coding Agent wants permission to make {entry.ops.length === 1 ? "this file change" : `these ${entry.ops.length} file changes`}.
           </p>
           <div className="mt-3 flex justify-end gap-2">
             <button
@@ -598,65 +336,24 @@ function ExecutorCard({
   const pending = entry.resolution === "pending";
   return (
     <CardShell agent={entry.agent} resolution={entry.resolution}>
-      {entry.outputKind === "framework" && (
-        <>
-          <p className="text-sm text-gray-600">
-            Framework project — run it yourself, this tool won&apos;t launch a dev server for you:
-          </p>
-          <pre className="mt-2 overflow-x-auto rounded bg-gray-900 p-3 text-xs text-green-400">{entry.runCommand}</pre>
-          {pending && (
-            <div className="mt-3 flex justify-end">
-              <button
-                type="button"
-                onClick={() => onFinish("Ran the dev server.")}
-                className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 transition-colors"
-              >
-                I ran it
-              </button>
-            </div>
-          )}
-        </>
-      )}
-      {entry.outputKind === "multi_page" && (
-        <>
-          <p className="text-sm text-gray-600">Multiple pages generated — open each manually:</p>
-          <ul className="mt-2 space-y-1 text-sm">
-            {entry.paths.map((p) => (
-              <li key={p}>
-                <code className="rounded bg-gray-100 px-1.5 py-0.5">{p}</code>
-              </li>
-            ))}
-          </ul>
-          {pending && (
-            <div className="mt-3 flex justify-end">
-              <button
-                type="button"
-                onClick={() => onFinish("Opened pages manually.")}
-                className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 transition-colors"
-              >
-                Mark as opened
-              </button>
-            </div>
-          )}
-        </>
-      )}
-      {entry.outputKind === "html" && (
-        <>
-          <p className="text-sm text-gray-600">
-            Plain HTML — opening <code className="rounded bg-gray-100 px-1.5 py-0.5">{entry.paths[0]}</code> directly.
-          </p>
-          {pending && (
-            <div className="mt-3 flex justify-end">
-              <button
-                type="button"
-                onClick={() => onFinish(`Opened ${entry.paths[0]} in browser.`)}
-                className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 transition-colors"
-              >
-                Open in Browser
-              </button>
-            </div>
-          )}
-        </>
+      <p className="text-sm text-gray-600">File generated — open manually:</p>
+      <ul className="mt-2 space-y-1 text-sm">
+        {entry.paths.map((p) => (
+          <li key={p}>
+            <code className="rounded bg-gray-100 px-1.5 py-0.5">{p}</code>
+          </li>
+        ))}
+      </ul>
+      {pending && (
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => onFinish("Marked as done.")}
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 transition-colors"
+          >
+            Mark as done
+          </button>
+        </div>
       )}
     </CardShell>
   );
@@ -668,21 +365,15 @@ function EntryView({
   feedbackTarget,
   onAllow,
   onDeny,
-  onApprovePlan,
-  onRequestPlanChanges,
-  onCancelPlan,
   onApproveBatch,
   onRequestBatchChanges,
   onFinishExecution,
 }: {
   entry: ChatEntry;
   previousCreatedAt: number | null;
-  feedbackTarget: "plan" | "batch" | null;
+  feedbackTarget: "batch" | null;
   onAllow: () => void;
   onDeny: () => void;
-  onApprovePlan: () => void;
-  onRequestPlanChanges: () => void;
-  onCancelPlan: () => void;
   onApproveBatch: () => void;
   onRequestBatchChanges: () => void;
   onFinishExecution: (note: string) => void;
@@ -705,28 +396,6 @@ function EntryView({
             <MessageFooter copyText={entry.text} createdAt={entry.createdAt} previousCreatedAt={previousCreatedAt} />
           </div>
         </div>
-      );
-    case "snippet":
-      return (
-        <div className="flex justify-start">
-          <div className="max-w-[85%] w-full space-y-0.5">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">{entry.agent}</p>
-            <pre className="overflow-x-auto whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-gray-900 px-4 py-3 text-xs text-green-400">
-              {entry.code}
-            </pre>
-            <MessageFooter copyText={entry.code} createdAt={entry.createdAt} previousCreatedAt={previousCreatedAt} />
-          </div>
-        </div>
-      );
-    case "plan":
-      return (
-        <PlanCard
-          entry={entry}
-          onApprove={onApprovePlan}
-          onRequestChanges={onRequestPlanChanges}
-          onCancel={onCancelPlan}
-          locked={feedbackTarget === "plan"}
-        />
       );
     case "permission":
       return <PermissionCard entry={entry} onAllow={onAllow} onDeny={onDeny} />;
@@ -781,13 +450,31 @@ function ThinkingIndicator({ thinking }: { thinking: boolean }) {
   );
 }
 
+// Fixed-height bar reserved between the chat stream and the composer —
+// always mounted, so it never shifts layout when it fills or empties. Holds
+// the Zap status indicator plus a live-ticking elapsed timer for whichever
+// real model call is currently in flight. Living outside the scrolling
+// entries list means it can't drift away from the bottom as later chat
+// messages arrive, unlike an appended-then-removed chat bubble would.
+function FeedbackBar({ thinking, startedAt }: { thinking: boolean; startedAt: number | null }) {
+  return (
+    <div className="flex h-11 flex-shrink-0 items-center gap-2 border-t border-gray-100 px-3">
+      <ThinkingIndicator thinking={thinking} />
+      {thinking && startedAt !== null && (
+        <span className="text-xs italic text-gray-500">
+          <ElapsedTimer startedAt={startedAt} />
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Composer({
   value,
   onChange,
   onSubmit,
   placeholder,
   disabled,
-  thinking,
   textareaRef,
 }: {
   value: string;
@@ -795,7 +482,6 @@ function Composer({
   onSubmit: () => void;
   placeholder: string;
   disabled: boolean;
-  thinking: boolean;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
 }) {
   useEffect(() => {
@@ -807,7 +493,6 @@ function Composer({
 
   return (
     <div className="flex flex-shrink-0 items-end gap-2 border-t border-gray-100 p-3">
-      <ThinkingIndicator thinking={thinking} />
       <textarea
         ref={textareaRef}
         rows={1}
@@ -861,6 +546,18 @@ export function AgenticCodeView() {
     setSessionData((prev) => ({ ...prev, [sid]: { ...prev[sid], entries: [...prev[sid].entries, entry] } }));
   }
 
+  // Marks a real model call in flight for the duration bar reserved below
+  // the chat stream (see FeedbackBar) — a fixed-position live timer instead
+  // of a chat bubble, so it can't drift away from the bottom as later
+  // messages arrive.
+  function beginModelWork(sid: string) {
+    patchSession(sid, { awaitingModel: true, modelWorkStartedAt: Date.now() });
+  }
+
+  function endModelWork(sid: string) {
+    patchSession(sid, { awaitingModel: false, modelWorkStartedAt: null });
+  }
+
   function pushText(sid: string, agent: string, text: string) {
     appendEntry(sid, makeEntry({ kind: "text", agent, text }));
   }
@@ -887,15 +584,36 @@ export function AgenticCodeView() {
     setSessionMeta((prev) => prev.map((s) => (s.id === sid ? { ...s, name } : s)));
   }
 
-  function beginPlanning(sid: string, outputKind: AgenticCodeOutputKind, projectName: string) {
-    patchSession(sid, { stage: "planning", outputKind });
-    pushText(sid, "Planner", "Drafting a plan…");
-    setTimeout(() => {
-      const plan = buildMockPlan(outputKind);
-      const entry = makeEntry({ kind: "plan" as const, agent: "Planner", plan, revision: 0, projectName, resolution: "pending" as PlanResolution });
-      appendEntry(sid, entry);
-      patchSession(sid, { stage: "plan_review", plan, pendingEntryId: entry.id });
-    }, 700);
+  function startPermission(sid: string, op: AgenticCodeFileOp) {
+    patchSession(sid, { fileOp: op });
+    const entry = makeEntry({ kind: "permission" as const, agent: "Coding Agent", taskTitle: "Build index.html", ops: [op], resolution: "pending" as PermissionResolution });
+    appendEntry(sid, entry);
+    patchSession(sid, { pendingEntryId: entry.id });
+  }
+
+  // Real project-folder creation, then a single permission gate for the
+  // one file this MVP ever builds — no Planner/plan stage. See ADR 0003's
+  // revamp section for why the multi-task plan was dropped.
+  async function beginBuild(sid: string, projectBaseName: string) {
+    patchSession(sid, { stage: "building" });
+    beginModelWork(sid);
+    try {
+      const { dir } = await createAgenticCodeProject(projectBaseName);
+      setProjectName(sid, dir);
+      pushText(sid, "Intake", `Created ${projectPath(dir)}/. Handing off to the Coding Agent.`);
+      const op: AgenticCodeFileOp = {
+        operation: "create",
+        path: "index.html",
+        preview: "A single self-contained HTML page implementing the request, styled with Tailwind via CDN.",
+      };
+      startPermission(sid, op);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      pushText(sid, "Coding Agent", `Couldn't create the project folder (${message}).`);
+      patchSession(sid, { stage: "input" });
+    } finally {
+      endModelWork(sid);
+    }
   }
 
   async function handleStart(sid: string, text: string) {
@@ -903,20 +621,14 @@ export function AgenticCodeView() {
     markSessionStatus(sid, "in_progress");
     const detectedName = extractProjectName(text);
     if (detectedName) setProjectName(sid, detectedName);
-    patchSession(sid, { stage: "clarifying", awaitingModel: true });
-    pushText(sid, "Intake", "Reading your request…");
+    patchSession(sid, { stage: "clarifying", requestText: text });
+    beginModelWork(sid);
 
     try {
       await streamAgenticCodePreview(text, (event) => {
         switch (event.type) {
-          case "log":
-            pushText(sid, "Intake", event.message);
-            break;
           case "question_ready":
             pushText(sid, "Intake", event.question);
-            break;
-          case "snippet_ready":
-            appendEntry(sid, makeEntry({ kind: "snippet", agent: "Coding Agent", code: event.snippet }));
             break;
           case "error":
             pushText(sid, "Intake", event.message);
@@ -925,20 +637,18 @@ export function AgenticCodeView() {
         }
       });
     } finally {
-      patchSession(sid, { awaitingModel: false });
+      endModelWork(sid);
     }
   }
 
   function handleClarifyAnswer(sid: string, text: string) {
     pushUser(sid, text);
-    const lower = text.toLowerCase();
-    const outputKind: AgenticCodeOutputKind = lower.includes("next") ? "framework" : lower.includes("multi") ? "multi_page" : "html";
     if (session.projectName) {
-      pushText(sid, "Intake", "Got it — handing off clean instructions to the Planner.");
-      beginPlanning(sid, outputKind, session.projectName);
+      pushText(sid, "Intake", "Got it — handing off to the Coding Agent.");
+      beginBuild(sid, session.projectName);
     } else {
       pushText(sid, "Intake", "Got it.");
-      patchSession(sid, { stage: "naming", outputKind });
+      patchSession(sid, { stage: "naming" });
       pushText(sid, "Intake", `What should we call this project? It becomes the folder at ${PROJECT_ROOT}/<name>.`);
     }
   }
@@ -946,164 +656,80 @@ export function AgenticCodeView() {
   function handleProjectName(sid: string, text: string) {
     pushUser(sid, text);
     const name = slugify(text) || "untitled-project";
-    setProjectName(sid, name);
-    pushText(sid, "Intake", `Got it — creating ${projectPath(name)}/. Handing off clean instructions to the Planner.`);
-    beginPlanning(sid, session.outputKind, name);
-  }
-
-  function handleApprovePlan() {
-    const sid = activeId;
-    const firstTask = session.plan?.tasks[0];
-    resolvePending(sid, "approved");
-    pushText(sid, "Planner", "Plan approved — handing off to the Coding Agent.");
-    patchSession(sid, { stage: "building", taskIndex: 0, opIndex: 0 });
-    if (firstTask) {
-      pushText(sid, "Coding Agent", `Starting task 1: ${firstTask.title}`);
-      const op = firstTask.ops[0];
-      if (op) {
-        const entry = makeEntry({ kind: "permission" as const, agent: "Coding Agent", taskTitle: firstTask.title, op, resolution: "pending" as PermissionResolution });
-        appendEntry(sid, entry);
-        patchSession(sid, { pendingEntryId: entry.id });
-      }
-    }
-  }
-
-  function beginPlanFeedback() {
-    const sid = activeId;
-    patchSession(sid, { feedbackTarget: "plan" });
-    pushText(sid, "Planner", "What should change about this plan?");
-    composerRef.current?.focus();
-  }
-
-  function handlePlanFeedback(sid: string, feedback: string) {
-    const basePlan = session.plan;
-    if (!basePlan) return;
-    resolvePending(sid, "changes_requested");
-    pushUser(sid, feedback);
-    patchSession(sid, { feedbackTarget: null, stage: "planning" });
-    pushText(sid, "Planner", "Revising the plan — keeping the tasks you didn't flag.");
-    const revisionCount = session.revisionCount + 1;
-    setTimeout(() => {
-      const revisedPlan: AgenticCodePlan = {
-        ...basePlan,
-        tasks: [
-          ...basePlan.tasks,
-          {
-            id: `revision-${revisionCount}`,
-            title: `Apply feedback: "${feedback}"`,
-            ops: [
-              {
-                operation: "edit",
-                path: basePlan.tasks[0]?.ops[0]?.path ?? "index.html",
-                preview: "// updated per your feedback",
-              },
-            ],
-          },
-        ],
-      };
-      const entry = makeEntry({
-        kind: "plan" as const,
-        agent: "Planner",
-        plan: revisedPlan,
-        revision: revisionCount,
-        projectName: session.projectName ?? "untitled-project",
-        resolution: "pending" as PlanResolution,
-      });
-      appendEntry(sid, entry);
-      patchSession(sid, { stage: "plan_review", plan: revisedPlan, revisionCount, pendingEntryId: entry.id });
-    }, 700);
-  }
-
-  function handleCancelPlan() {
-    const sid = activeId;
-    resolvePending(sid, "cancelled");
-    pushText(sid, "Planner", "Task discarded — project memory is unaffected.");
-    markSessionStatus(sid, "idle");
-    patchSession(sid, {
-      stage: "input",
-      plan: null,
-      taskIndex: 0,
-      opIndex: 0,
-      feedbackTarget: null,
-      composerText: "",
-      pendingEntryId: null,
-    });
+    pushText(sid, "Intake", "Got it — handing off to the Coding Agent.");
+    beginBuild(sid, name);
   }
 
   function handlePermission(allow: boolean) {
     const sid = activeId;
-    const task = session.plan?.tasks[session.taskIndex];
-    const op = task?.ops[session.opIndex];
-    if (!task || !op) return;
+    const op = session.fileOp;
+    if (!op) return;
     resolvePending(sid, allow ? "allowed" : "denied");
-    const nextOpIndex = session.opIndex + 1;
-    if (nextOpIndex < task.ops.length) {
-      const nextOp = task.ops[nextOpIndex];
-      const entry = makeEntry({ kind: "permission" as const, agent: "Coding Agent", taskTitle: task.title, op: nextOp, resolution: "pending" as PermissionResolution });
-      appendEntry(sid, entry);
-      patchSession(sid, { opIndex: nextOpIndex, pendingEntryId: entry.id });
-    } else {
-      pushText(sid, "Coding Agent", `Task ${session.taskIndex + 1} complete — awaiting your review.`);
-      const entry = makeEntry({ kind: "batch" as const, agent: "Coding Agent", taskTitle: task.title, ops: task.ops, resolution: "pending" as BatchResolution });
-      appendEntry(sid, entry);
-      patchSession(sid, { stage: "batch_review", pendingEntryId: entry.id });
+    const feedback = session.pendingFeedback;
+    patchSession(sid, { pendingFeedback: null });
+
+    if (!allow) {
+      pushText(sid, "Coding Agent", "Build denied — nothing was written.");
+      markSessionStatus(sid, "idle");
+      patchSession(sid, { stage: "input" });
+      return;
     }
+
+    const projectDir = session.projectName ?? "untitled-project";
+    const requestContext = session.requestText ?? "";
+    beginModelWork(sid);
+    streamWriteTask(projectDir, requestContext, "Build index.html", [op], feedback, (event) => {
+      switch (event.type) {
+        case "log":
+          pushText(sid, "Coding Agent", event.message);
+          break;
+        case "file_written":
+          pushText(sid, "Coding Agent", `Wrote ${event.path}`);
+          break;
+        case "error":
+          pushText(sid, "Coding Agent", `Write failed: ${event.message}`);
+          startPermission(sid, op);
+          break;
+        case "task_complete": {
+          pushText(sid, "Coding Agent", "Build complete — awaiting your review.");
+          const entry = makeEntry({ kind: "batch" as const, agent: "Coding Agent", taskTitle: "Build index.html", ops: [op], resolution: "pending" as BatchResolution });
+          appendEntry(sid, entry);
+          patchSession(sid, { stage: "batch_review", pendingEntryId: entry.id });
+          break;
+        }
+      }
+    }).finally(() => endModelWork(sid));
   }
 
   function handleApproveBatch() {
     const sid = activeId;
-    const plan = session.plan;
-    if (!plan) return;
     resolvePending(sid, "approved");
-    const nextTaskIndex = session.taskIndex + 1;
-    if (nextTaskIndex < plan.tasks.length) {
-      const nextTask = plan.tasks[nextTaskIndex];
-      pushText(sid, "Coding Agent", `Starting task ${nextTaskIndex + 1}: ${nextTask.title}`);
-      patchSession(sid, { stage: "building", taskIndex: nextTaskIndex, opIndex: 0 });
-      const op = nextTask.ops[0];
-      if (op) {
-        const entry = makeEntry({ kind: "permission" as const, agent: "Coding Agent", taskTitle: nextTask.title, op, resolution: "pending" as PermissionResolution });
-        appendEntry(sid, entry);
-        patchSession(sid, { pendingEntryId: entry.id });
-      }
-    } else {
-      pushText(sid, "Executor", "All tasks complete — preparing output.");
-      const dir = projectPath(session.projectName ?? "untitled-project");
-      const paths = Array.from(
-        new Set(plan.tasks.flatMap((t) => t.ops.map((o) => o.path)).filter((p) => p.endsWith(".html")))
-      ).map((p) => `${dir}/${p}`);
-      const entry = makeEntry({
-        kind: "executor" as const,
-        agent: "Executor",
-        outputKind: session.outputKind,
-        paths,
-        runCommand: session.outputKind === "framework" ? `cd ${dir} && npm install && npm run dev` : undefined,
-        resolution: "pending" as ExecutorResolution,
-      });
-      appendEntry(sid, entry);
-      patchSession(sid, { stage: "executing", pendingEntryId: entry.id });
-    }
+    pushText(sid, "Executor", "Build complete — preparing output.");
+    const dir = projectPath(session.projectName ?? "untitled-project");
+    const entry = makeEntry({
+      kind: "executor" as const,
+      agent: "Executor",
+      paths: [`${dir}/index.html`],
+      resolution: "pending" as ExecutorResolution,
+    });
+    appendEntry(sid, entry);
+    patchSession(sid, { stage: "executing", pendingEntryId: entry.id });
   }
 
   function beginBatchFeedback() {
     const sid = activeId;
     patchSession(sid, { feedbackTarget: "batch" });
-    pushText(sid, "Coding Agent", "What should change about these files?");
+    pushText(sid, "Coding Agent", "What should change about this file?");
     composerRef.current?.focus();
   }
 
   function handleBatchFeedback(sid: string, feedback: string) {
     resolvePending(sid, "changes_requested");
     pushUser(sid, feedback);
-    patchSession(sid, { feedbackTarget: null, stage: "building", opIndex: 0 });
-    pushText(sid, "Coding Agent", "Applying your feedback to this task's files…");
-    const task = session.plan?.tasks[session.taskIndex];
-    const op = task?.ops[0];
-    if (task && op) {
-      const entry = makeEntry({ kind: "permission" as const, agent: "Coding Agent", taskTitle: task.title, op, resolution: "pending" as PermissionResolution });
-      appendEntry(sid, entry);
-      patchSession(sid, { pendingEntryId: entry.id });
-    }
+    patchSession(sid, { feedbackTarget: null, stage: "building", pendingFeedback: feedback });
+    pushText(sid, "Coding Agent", "Applying your feedback…");
+    const op = session.fileOp;
+    if (op) startPermission(sid, op);
   }
 
   function handleFinishExecution(note: string) {
@@ -1155,9 +781,7 @@ export function AgenticCodeView() {
     const text = session.composerText.trim();
     if (!text) return;
     patchSession(sid, { composerText: "" });
-    if (session.feedbackTarget === "plan") {
-      handlePlanFeedback(sid, text);
-    } else if (session.feedbackTarget === "batch") {
+    if (session.feedbackTarget === "batch") {
       handleBatchFeedback(sid, text);
     } else if (session.stage === "input") {
       handleStart(sid, text);
@@ -1168,27 +792,24 @@ export function AgenticCodeView() {
     }
   }
 
-  const composerMode: "build_request" | "clarify_answer" | "project_name" | "plan_feedback" | "batch_feedback" | "disabled" =
+  const composerMode: "build_request" | "clarify_answer" | "project_name" | "batch_feedback" | "disabled" =
     session.awaitingModel
       ? "disabled"
-      : session.feedbackTarget === "plan"
-        ? "plan_feedback"
-        : session.feedbackTarget === "batch"
-          ? "batch_feedback"
-          : session.stage === "input"
-            ? "build_request"
-            : session.stage === "clarifying"
-              ? "clarify_answer"
-              : session.stage === "naming"
-                ? "project_name"
-                : "disabled";
+      : session.feedbackTarget === "batch"
+        ? "batch_feedback"
+        : session.stage === "input"
+          ? "build_request"
+          : session.stage === "clarifying"
+            ? "clarify_answer"
+            : session.stage === "naming"
+              ? "project_name"
+              : "disabled";
 
   const composerPlaceholder: Record<typeof composerMode, string> = {
     build_request: "Describe what you want built…",
     clarify_answer: "Answer the question above…",
     project_name: "Name this project (used as the folder name)…",
-    plan_feedback: "What should change about the plan?",
-    batch_feedback: "What should change about these files?",
+    batch_feedback: "What should change about this file?",
     disabled: session.awaitingModel
       ? "Thinking…"
       : session.stage === "done"
@@ -1206,7 +827,7 @@ export function AgenticCodeView() {
           <p className="mt-0.5 text-sm text-gray-500">
             {showAbout
               ? "How the pipeline is put together, and every constraint explained."
-              : "Describe what to build. Intake, Planner, and a Coding Agent take it from there — you approve every step."}
+              : "Describe what you want built. Intake and a Coding Agent take it from there — you approve every step."}
           </p>
         </div>
         <div className="flex flex-shrink-0 items-center gap-4">
@@ -1238,10 +859,6 @@ export function AgenticCodeView() {
         </div>
       ) : (
         <>
-          <div className="flex-shrink-0 rounded-xl border border-gray-200 bg-white px-4 py-3">
-            <Stepper stage={session.stage} />
-          </div>
-
           <div className="grid flex-1 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[220px_1fr]">
             <div className="flex flex-col gap-4 overflow-y-auto">
               <AgenticCodeSessionSwitcher
@@ -1270,9 +887,6 @@ export function AgenticCodeView() {
                       feedbackTarget={session.feedbackTarget}
                       onAllow={() => handlePermission(true)}
                       onDeny={() => handlePermission(false)}
-                      onApprovePlan={handleApprovePlan}
-                      onRequestPlanChanges={beginPlanFeedback}
-                      onCancelPlan={handleCancelPlan}
                       onApproveBatch={handleApproveBatch}
                       onRequestBatchChanges={beginBatchFeedback}
                       onFinishExecution={handleFinishExecution}
@@ -1292,13 +906,14 @@ export function AgenticCodeView() {
                 )}
               </div>
 
+              <FeedbackBar thinking={session.awaitingModel} startedAt={session.modelWorkStartedAt} />
+
               <Composer
                 value={session.composerText}
                 onChange={(v) => patchSession(activeId, { composerText: v })}
                 onSubmit={handleComposerSubmit}
                 placeholder={composerPlaceholder[composerMode]}
                 disabled={composerMode === "disabled"}
-                thinking={session.awaitingModel}
                 textareaRef={composerRef}
               />
             </div>

@@ -10,31 +10,34 @@ export function AgenticCodeAbout() {
       <section className="space-y-2">
         <h2 className="text-base font-bold text-gray-900">What is this?</h2>
         <p>
-          A coding agent: describe what you want built, and a small pipeline of agents plans it,
-          builds it file by file, and tells you how to run it. Unlike Research and Browser
-          Navigator, this tool mutates your filesystem and can produce runnable code — so it leans
-          on human checkpoints at every point that matters, instead of running end to end
-          unsupervised.
+          A coding agent: describe what you want built, and it produces one real,
+          self-contained HTML page — styled with Tailwind CSS and Font Awesome icons via
+          CDN — with human checkpoints before anything gets written and before it's
+          considered done. Unlike Research and Browser Navigator, this tool mutates your
+          filesystem, so every step that matters is gated on your approval rather than
+          running end to end unsupervised.
         </p>
         <p>
-          Initial scope is deliberately narrow: static or lightly-scripted frontend output
-          (HTML/CSS/JS, optionally Tailwind or a JS library) and, at the top tier, a Next.js
-          project. No backend code generation yet.
+          Scope is deliberately narrow: one static HTML file per project, no multi-page
+          sites, no framework output, no backend code. See{" "}
+          <code className="bg-gray-100 px-1 rounded">docs/adr/0003-agentic-code-pipeline.md</code>{" "}
+          for why — the original design sketched a multi-task Planner and multi-file
+          output, but on a small local model that produced plans disconnected from the
+          actual request and pages that lost their styling partway through a multi-pass
+          build. Single-file-per-request is what's reliable on this hardware today.
         </p>
       </section>
 
-      {/* Scaffold status */}
+      {/* Status */}
       <section className="space-y-2">
-        <h2 className="text-base font-bold text-gray-900">Current status: mostly mock, one real wire</h2>
+        <h2 className="text-base font-bold text-gray-900">Current status: fully real, no mocked stages</h2>
         <p>
-          The very first exchange — Intake&apos;s clarifying question and a sample code snippet —
-          is real: it calls <code className="bg-gray-100 px-1 rounded">gemma4:e4b-mlx</code> running
-          locally via Ollama through a plain <code className="bg-gray-100 px-1 rounded">POST /agentic-code/preview</code>{" "}
-          endpoint, no streaming or file writes yet. Everything after that (naming, planning,
-          build, review, execute) still runs on <strong>local mock state and canned data</strong>.
-          Sessions reset when you reload the page. See{" "}
-          <code className="bg-gray-100 px-1 rounded">docs/adr/0003-agentic-code-pipeline.md</code>{" "}
-          for the full design decision this scaffold follows.
+          Every step in the pipeline is a genuine call to{" "}
+          <code className="bg-gray-100 px-1 rounded">gemma4:e4b-mlx</code> running locally via
+          Ollama, or a real filesystem operation: Intake&apos;s clarifying question, the
+          project folder creation, the file generation, and every revision from feedback.
+          Nothing here is canned or pre-scripted. Sessions are still in-memory only and
+          reset on reload — real cross-session persistence remains sequenced future work.
         </p>
       </section>
 
@@ -45,19 +48,15 @@ export function AgenticCodeAbout() {
           {[
             {
               name: "Intake Agent",
-              desc: "Turns a raw chat request into clean, structured instructions. Asks a clarifying question when the request is ambiguous, instead of guessing — that's its whole reason for being a separate agent rather than a preprocessing step.",
-            },
-            {
-              name: "Planner Agent",
-              desc: "Drafts an execution plan divided into tasks. Owns persistent, project-scoped memory — conventions chosen, file structure, past decisions — that survives across sessions and cancellations. Rejected plans get a targeted revision, not a full redo.",
+              desc: "Turns a raw chat request into a real project. Asks one clarifying question about content, style, or tone — never about output format, since that's fixed to a single HTML page — then creates the real numbered project folder.",
             },
             {
               name: "Coding Agent",
-              desc: "Implements the approved plan one task at a time. Every file create, edit, or delete is its own permission prompt — maximally granular, the same trust model this environment uses.",
+              desc: "Generates the one file for real, grounded in your actual request text (not a template). Automatically retries once if the required Tailwind CDN tag goes missing from its own output, and flags it in review if it's still missing after that — a real, cheap correctness check, not a mock.",
             },
             {
               name: "Executor",
-              desc: "Not an LLM. A deterministic last step: opens plain HTML directly, lists paths for multi-page output, or prints the run command for framework output rather than executing it on your behalf.",
+              desc: "Not an LLM. A deterministic last step: prints the generated file's path for you to open manually.",
             },
           ].map((a) => (
             <div key={a.name} className="rounded-lg border border-gray-200 px-4 py-3">
@@ -81,10 +80,8 @@ export function AgenticCodeAbout() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {[
-                ["Plan approval", "Approve → build. Reject with feedback → targeted re-plan. Cancel → back to input, project memory unaffected."],
-                ["Per-file permission", "Allow or deny each file create/edit/delete individually, as the Coding Agent works through a task."],
-                ["Code review per task", "Approve → next task or execution. Request changes → back to the Coding Agent with your feedback."],
-                ["Result review", "You check the rendered/running output yourself. Not automated in this scope."],
+                ["Permission", "Allow → the Coding Agent writes the file for real. Deny → nothing is written, back to input."],
+                ["Review", "Approve → done, Executor lists the path. Request changes → your feedback goes straight into the next real generation call."],
               ].map(([gate, options]) => (
                 <tr key={gate} className="text-gray-700">
                   <td className="px-4 py-2 font-medium whitespace-nowrap">{gate}</td>
@@ -96,29 +93,17 @@ export function AgenticCodeAbout() {
         </div>
       </section>
 
-      {/* Sessions */}
-      <section className="space-y-3">
-        <h2 className="text-base font-bold text-gray-900">Sessions</h2>
-        <p>
-          A session is scoped to one project, and is meant to be resumable over time — similar to a
-          Claude Code session. The Planner's memory is attached to the project, not the session, so
-          it persists across cancellations and across separate sessions on the same project. In this
-          scaffold, sessions are in-memory only and reset on reload; real persistence is plain
-          structured data written to disk, the same pattern this app already uses for Browser
-          Navigator's per-domain memory — it's simple, and it's staying in scope, just sequenced
-          after a backend exists for this tool.
-        </p>
-      </section>
-
       {/* Project location */}
       <section className="space-y-3">
         <h2 className="text-base font-bold text-gray-900">Where output goes</h2>
         <p>
-          Every project lands at a fixed path:{" "}
-          <code className="bg-gray-100 px-1 rounded">agtdemo/dist/&lt;project-name&gt;/</code> — no
-          per-run folder picker. If you don&apos;t name the project in your first message, Intake
-          asks for one before planning starts. A session is scoped 1:1 to a project directory, so
-          the project name also becomes the session&apos;s name in the sidebar.
+          Every project lands at{" "}
+          <code className="bg-gray-100 px-1 rounded">agtdemo/dist/&lt;n&gt;-&lt;name&gt;/</code>,
+          where <code className="bg-gray-100 px-1 rounded">n</code> is a real, ever-incrementing
+          counter across every project this tool has ever built — no per-run folder picker, no
+          collisions. If you don&apos;t name the project in your first message, Intake asks for
+          one before building starts. A session is scoped 1:1 to a project directory, so the
+          resolved folder name also becomes the session&apos;s name in the sidebar.
         </p>
       </section>
 
@@ -126,10 +111,8 @@ export function AgenticCodeAbout() {
       <section className="space-y-3">
         <h2 className="text-base font-bold text-gray-900">Offline by hard constraint</h2>
         <p>
-          This tool has no API-key inputs anywhere in its UI, on purpose. Every agent here must run
-          on a locally-downloaded model — no OpenRouter, no cloud fallback. Which model is capable
-          enough to plan and write code reliably on consumer hardware is still an open question;
-          picking one is the immediate next step after this scaffold. See{" "}
+          This tool has no API-key inputs anywhere in its UI, on purpose. Every agent here runs
+          on a locally-downloaded model — no OpenRouter, no cloud fallback. See{" "}
           <Link href="/offline-ai" className="text-indigo-600 hover:underline">
             Offline AI
           </Link>{" "}

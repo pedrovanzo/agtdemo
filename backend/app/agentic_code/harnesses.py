@@ -8,13 +8,17 @@ at that domain's prompt site, no new plumbing needed.
 """
 
 FRONTEND_HARNESSES = [
-    "If this is the initial snippet, include full <html> and <head> tags.",
+    "If generating a full HTML page file, include full <html> and <head> tags.",
     "Default to Tailwind CSS via CDN and Tailwind utility classes for styling.",
     'Include <meta charset="UTF-8"> and a responsive viewport meta tag in <head>.',
     'No <style> blocks or style="" attributes — Tailwind utility classes only.',
     "Prefer semantic HTML5 elements (main, header, section) over generic <div> soup.",
     "Put all JavaScript in one <script> at the end of <body> — no inline onclick handlers.",
     "Design responsive by default — use Tailwind's sm:/md: prefixes even if not explicitly requested.",
+    'For any icons, use Font Awesome via this CDN in <head>: <link rel="stylesheet" '
+    'href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.3.0/css/all.min.css">. '
+    'Use its <i class="fa-solid fa-..."></i> markup. Do not hand-write inline <svg> icons '
+    "unless the request explicitly asks for custom/hand-drawn icons.",
 ]
 
 
