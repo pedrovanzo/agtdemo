@@ -41,6 +41,7 @@ type SessionState = {
   pendingFeedback: string | null;
   awaitingModel: boolean;
   modelWorkStartedAt: number | null;
+  hasBuiltOnce: boolean;
 };
 
 let idSeq = 0;
@@ -66,6 +67,7 @@ function freshSession(): SessionState {
     pendingFeedback: null,
     awaitingModel: false,
     modelWorkStartedAt: null,
+    hasBuiltOnce: false,
   };
 }
 
@@ -669,9 +671,12 @@ export function AgenticCodeView() {
     patchSession(sid, { pendingFeedback: null });
 
     if (!allow) {
-      pushText(sid, "Coding Agent", "Build denied — nothing was written.");
-      markSessionStatus(sid, "idle");
-      patchSession(sid, { stage: "input" });
+      // Once a file already exists, denying a further change should return
+      // to the open "ask for another change" state, not "input" — "input"
+      // means the next message creates a brand new project.
+      pushText(sid, "Coding Agent", session.hasBuiltOnce ? "Denied — nothing was changed." : "Build denied — nothing was written.");
+      markSessionStatus(sid, session.hasBuiltOnce ? "done" : "idle");
+      patchSession(sid, { stage: session.hasBuiltOnce ? "done" : "input" });
       return;
     }
 
@@ -694,7 +699,7 @@ export function AgenticCodeView() {
           pushText(sid, "Coding Agent", "Build complete — awaiting your review.");
           const entry = makeEntry({ kind: "batch" as const, agent: "Coding Agent", taskTitle: "Build index.html", ops: [op], resolution: "pending" as BatchResolution });
           appendEntry(sid, entry);
-          patchSession(sid, { stage: "batch_review", pendingEntryId: entry.id });
+          patchSession(sid, { stage: "batch_review", pendingEntryId: entry.id, hasBuiltOnce: true });
           break;
         }
       }
@@ -732,13 +737,30 @@ export function AgenticCodeView() {
     if (op) startPermission(sid, op);
   }
 
+  // "done" isn't terminal — it's the ready-for-more state. The file stays
+  // open for further real edits in the same session (composerMode maps
+  // "done" to an enabled composer below); "Start new session" is offered
+  // alongside it for when the next request is a different project instead.
   function handleFinishExecution(note: string) {
     const sid = activeId;
     resolvePending(sid, "done");
     pushText(sid, "Executor", note);
-    pushText(sid, "Executor", "Session complete. Review the result yourself, then start fresh whenever you're ready.");
+    pushText(sid, "Executor", "Ready for more — ask for another change, or start a new session for a different project.");
     markSessionStatus(sid, "done");
     patchSession(sid, { stage: "done" });
+  }
+
+  // Any message sent once a file already exists is a further real edit to
+  // it, not a new build — routes through the same permission/write/review
+  // loop as the first build, with the message threaded as feedback.
+  function handleModifyRequest(sid: string, text: string) {
+    const op = session.fileOp;
+    if (!op) return;
+    pushUser(sid, text);
+    markSessionStatus(sid, "in_progress");
+    patchSession(sid, { stage: "building", pendingFeedback: text });
+    pushText(sid, "Coding Agent", "Applying your request…");
+    startPermission(sid, op);
   }
 
   function handleNewSession() {
@@ -789,10 +811,12 @@ export function AgenticCodeView() {
       handleClarifyAnswer(sid, text);
     } else if (session.stage === "naming") {
       handleProjectName(sid, text);
+    } else if (session.stage === "done") {
+      handleModifyRequest(sid, text);
     }
   }
 
-  const composerMode: "build_request" | "clarify_answer" | "project_name" | "batch_feedback" | "disabled" =
+  const composerMode: "build_request" | "clarify_answer" | "project_name" | "batch_feedback" | "modify_request" | "disabled" =
     session.awaitingModel
       ? "disabled"
       : session.feedbackTarget === "batch"
@@ -803,18 +827,17 @@ export function AgenticCodeView() {
             ? "clarify_answer"
             : session.stage === "naming"
               ? "project_name"
-              : "disabled";
+              : session.stage === "done"
+                ? "modify_request"
+                : "disabled";
 
   const composerPlaceholder: Record<typeof composerMode, string> = {
     build_request: "Describe what you want built…",
     clarify_answer: "Answer the question above…",
     project_name: "Name this project (used as the folder name)…",
     batch_feedback: "What should change about this file?",
-    disabled: session.awaitingModel
-      ? "Thinking…"
-      : session.stage === "done"
-        ? "Start a new session to continue"
-        : "Waiting for you to respond above…",
+    modify_request: "Ask for another change, or describe what to add…",
+    disabled: session.awaitingModel ? "Thinking…" : "Waiting for you to respond above…",
   };
 
   return (
